@@ -19,7 +19,7 @@ by shared event attendance).
 ## Repository Structure
 
 ```
-notification_model_plan.md
+README.md
 data/
   raw/                    # downloaded Meetup dataset files
   processed/              # graph objects, feature tensors, splits
