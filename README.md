@@ -11,31 +11,30 @@ when a new event is posted on SideQuest. The model optimizes two objectives:
 
 We use the **Meetup.com dataset** as a structural analog to SideQuest — local events,
 explicit RSVPs, category tags, geographic data — and model social spread as complex
-contagion on the co-occurrence hypergraph (where each past shared event is a hyperedge
-containing all its attendees).
+contagion on the co-occurrence graph (a weighted pairwise graph where users are connected
+by shared event attendance).
 
 ---
 
 ## Repository Structure
 
 ```
-experiments/
-  notification_model_plan.md
-  data/
-    raw/                    # downloaded Meetup dataset files
-    processed/              # graph objects, feature tensors, splits
-  notebooks/
-    00_eda.ipynb            # schema exploration, distributions
-    01_graph_construction.ipynb
-    02_contagion_calibration.ipynb
-  src/
-    graph/                  # graph construction + feature extraction
-    contagion/              # cascade simulator
-    models/                 # all model implementations
-    evaluation/             # harness + metrics
-  results/
-    figures/
-    tables/
+notification_model_plan.md
+data/
+  raw/                    # downloaded Meetup dataset files
+  processed/              # graph objects, feature tensors, splits
+notebooks/
+  00_eda.ipynb            # schema exploration, distributions
+  01_graph_construction.ipynb
+  02_contagion_calibration.ipynb
+src/
+  graph/                  # graph construction + feature extraction
+  contagion/              # cascade simulator
+  models/                 # all model implementations
+  evaluation/             # harness + metrics
+results/
+  figures/
+  tables/
 ```
 
 ---
@@ -70,22 +69,21 @@ event, which is required to compute each user's social exposure at the moment th
 
 ## Phase 1: Graph Construction
 
-### 1.a — Co-occurrence Hypergraph
+### 1.a — Co-occurrence Graph
 *Depends on: Phase 0*
 
 Build the social graph from shared event attendance:
 
 1. **Bipartite graph** $B = (U, E_\text{ev}, A)$ — users × events, $A_{ue} = 1$ if user
    $u$ RSVPed yes to event $e$
-2. **Hyperedge list**: each event $e$ with $n$ attendees is an $(n-1)$-hyperedge. This is
-   the raw higher-order structure that complex contagion operates on.
-3. **Pairwise projection** (1-skeleton): weighted graph $G = (U, E_\text{pairs})$ where
-   edge weight $w(u,v) = $ number of shared yes-RSVPs, with recency decay:
+2. **Pairwise co-occurrence graph**: weighted graph $G = (U, E)$ where an edge $(u,v)$
+   exists if $u$ and $v$ both RSVPed yes to at least one common event. Edge weight with
+   recency decay:
    $$w(u,v) = \sum_{e \in \text{shared}(u,v)} \exp\!\left(-\alpha \cdot \Delta t_e\right)$$
    where $\Delta t_e$ is the age of event $e$ in days. Use $\alpha$ such that an event
    6 months old has ~50% weight.
 
-**Output**: adjacency list, hyperedge list (event → attendee set), edge weight matrix.
+**Output**: adjacency list, edge weight matrix.
 
 ### 1.b — Node Feature Extraction
 *Depends on: Phase 0 — can run in parallel with 1.a*
@@ -116,7 +114,7 @@ Build the social graph from shared event attendance:
 *Can run in parallel with: 2.b*
 
 **Goal**: empirically estimate $\beta_1$ (pairwise infection rate) and $\beta_2$
-(higher-order reinforcement) from observed RSVP cascades, rather than assuming them.
+(social reinforcement) from observed RSVP cascades, rather than assuming them.
 
 **Method**:
 
@@ -157,7 +155,7 @@ Build the social graph from shared event attendance:
 ## Phase 3: Model Development
 
 *All sub-phases can be developed in parallel once Phase 2 is complete.*
-*Phase 3.e and 3.f additionally depend on Phase 2.a for the cascade reward signal.*
+*Phase 3.e additionally depends on Phase 2.a for the cascade reward signal.*
 
 ### 3.a — Baselines (B1, B2, B3)
 *Depends on: Phase 2.b — no ML training required*
@@ -270,41 +268,14 @@ no event cross-attention; no structural value head.
 
 ---
 
-### 3.e — Hypergraph Neural Network (M4)
-*Depends on: Phase 2.b, Phase 2.a*
-
-Uses raw hyperedges (past events as hyperedges) rather than the pairwise projection.
-The pairwise projection loses information: it cannot distinguish between "users A, B, C
-all attended the same single event" and "A attended with B at one event, and B attended
-with C at a different event." For complex contagion this distinction matters — the former
-is a tighter social reinforcement unit.
-
-**Architecture**: HyperGCN (Yadati et al. 2019) or UniGNN (Huang & Yang 2021).
-Hyperedge convolution aggregates across entire event-groups rather than pairs:
-$$h_u^{(l+1)} = \sigma\!\left(W \cdot \sum_{e \in \mathcal{E}(u)} \frac{1}{|e|} \sum_{v \in e} h_v^{(l)}\right)$$
-
-The social reinforcement dynamic from Phase 2.a calibration directly motivates this
-architecture: $\beta_2$ captures the within-hyperedge amplification that pairwise
-aggregation cannot represent.
-
-**Seeding**: same greedy selection as M3, but with hyperedge-aware suppression — after
-selecting $u^*$, suppress users sharing a hyperedge (co-event) with $u^*$, weighted
-by hyperedge size and recency.
-
-**Why include this**: directly tests whether preserving higher-order group structure
-produces measurable gains over pairwise aggregation, and whether it better captures
-the complex contagion dynamics estimated in Phase 2.a.
-
----
-
-### 3.f — S2V-DQN Sequential Seeder (M5)
+### 3.e — S2V-DQN Sequential Seeder (M4)
 *Depends on: Phase 2.b, Phase 2.a (cascade simulator as reward during training)*
 
 A reinforcement learning agent that selects seed users one at a time, learning the value
 of each addition *given the users already selected*. Based on structure2vec-DQN
 (Dai et al. 2017).
 
-Unlike M3 and M4 which score users independently then apply a greedy heuristic, M5
+Unlike M3 which scores users independently then applies a greedy heuristic, M4
 learns the *combinatorial* value of a seed set — it explicitly represents "I already
 selected A, so selecting A's close co-attendee B is now less valuable."
 
@@ -328,9 +299,8 @@ $$Q(S_t, u) = \theta_4^\top \cdot \text{ReLU}\!\left(\left[\theta_5 \cdot \sum_{
 head predictions to avoid cold exploration.
 
 **Why include this**: only model that optimizes directly for cascade spread under the
-calibrated complex contagion model. The gap between M5 and the greedy-selection models
-(M3, M4) quantifies the value of learned sequential decision-making over independent
-scoring + greedy selection.
+calibrated complex contagion model. The gap between M4 and M3 quantifies the value of
+learned sequential decision-making over independent scoring + greedy selection.
 
 ---
 
@@ -341,17 +311,16 @@ scoring + greedy selection.
 ### 4.a — Monte Carlo Cascade Simulator
 *Depends on: Phase 2.a*
 
-Implements the calibrated complex contagion spread on the hypergraph:
+Implements the calibrated complex contagion spread on the pairwise co-occurrence graph:
 
 1. Initialize infected set $I = S$ (seed set)
-2. For each susceptible node $u$:
-   - Compute pairwise social exposure: $k_u^{(1)} = |\{v \in N_\text{pair}(u) : v \in I\}|$
-   - Compute hyperedge exposure: for each hyperedge $e \ni u$, count infected co-members
-   - Infection probability:
-     $$P(\text{infect}\,u) = 1 - (1-\hat\beta_1)^{k_u^{(1)}} + \hat\beta_2 \cdot \mathbf{1}[\exists\, e \ni u : |\{v \in e : v \in I\}| \geq 2]$$
-3. Sample infections; add newly infected to $I$; repeat until no new infections
+2. For each susceptible node $u$, compute social exposure:
+   $$k_u = |\{v \in N(u) : v \in I\}|$$
+3. Infection probability using calibrated parameters:
+   $$P(\text{infect}\,u) = 1 - (1-\hat\beta_1)^{k_u} + \hat\beta_2 \cdot \mathbf{1}[k_u \geq 2]$$
+4. Sample infections; add newly infected to $I$; repeat until no new infections
    or event capacity reached
-4. Run $M = 1000$ independent trials; report mean ± std RSVPs
+5. Run $M = 1000$ independent trials; report mean ± std RSVPs
 
 **Sensitivity**: also run with $\beta_2 = 0$ (simple IC) to quantify the contribution
 of complex contagion dynamics to the results.
@@ -387,7 +356,7 @@ For each held-out event $e_t$ in the test split:
 
 ### 5.a — Benchmark Run
 
-Run all 8 models on the full test event set.
+Run all 7 models on the full test event set.
 
 | Model | Mean RSVPs ↑ | Notifs/RSVP ↓ | $\Delta\lambda_2$ ↑ | 2-hop coverage ↑ | Runtime |
 |-------|------------|----------------|---------------------|-----------------|---------|
@@ -397,8 +366,7 @@ Run all 8 models on the full test event set.
 | M1 MLP | | | | | |
 | M2 LightGCN | | | | | |
 | M3 GAT | | | | | |
-| M4 HGNN | | | | | |
-| M5 S2V-DQN | | | | | |
+| M4 S2V-DQN | | | | | |
 
 ### 5.b — Statistical Testing
 
@@ -451,9 +419,9 @@ present in the Kaggle dump.
 
 ### 6.2 Infrastructure Requirements
 
-- **Graph construction**: nightly batch job rebuilding co-occurrence adjacency and
-  hyperedge list from `EventInteraction` table. Store as sparse adjacency in Redis or
-  as a serialized NetworkX/PyG graph.
+- **Graph construction**: nightly batch job rebuilding the co-occurrence adjacency from
+  `EventInteraction` table. Store as sparse adjacency in Redis or as a serialized
+  NetworkX/PyG graph.
 - **Node feature store**: extend or supplement `UserInterestEmbedding` with a parallel
   table storing structural features (degree, betweenness, clustering — precomputed
   nightly via the same batch job).
@@ -480,12 +448,9 @@ present in the Kaggle dump.
 
 ## Appendix: Key References
 
-- Iacopini et al. (2019) — "Simplicial Models of Social Contagion" (*Nature Communications*)
+- Centola & Macy (2007) — "Complex Contagions and the Weakness of Long Ties" (*American Journal of Sociology*) — foundational complex contagion theory
+- Iacopini et al. (2019) — "Simplicial Models of Social Contagion" (*Nature Communications*) — formal model for social reinforcement (basis for $\beta_2$ term)
 - Dai et al. (2017) — "Learning Combinatorial Optimization Algorithms over Graphs" (S2V-DQN)
 - Veličković et al. (2018) — "Graph Attention Networks"
 - He et al. (2020) — "LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation"
 - Leskovec et al. (2007) — "Cost-effective Outbreak Detection in Networks" (CELF)
-- Battiston et al. (2021) — "The physics of higher-order interactions in complex systems" (*Nature Physics*)
-- Yadati et al. (2019) — "HyperGCN: A New Method of Training Graph Convolutional Networks on Hypergraphs"
-- Huang & Yang (2021) — "UniGNN: A Unified Framework for Graph and Hypergraph Neural Networks"
-- Landry & Restrepo (2020) — "The effect of heterogeneity on hypergraph contagion models"
