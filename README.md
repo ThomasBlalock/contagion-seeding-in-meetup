@@ -107,294 +107,185 @@ Build the social graph from shared event attendance:
 
 ---
 
-## Phase 2: Calibration and Data Preparation
+## Phase 2: Susceptibility Prior & Contagion Calibration
 
-### 2.a — Complex Contagion Calibration
-*Depends on: Phase 1.a*
-*Can run in parallel with: 2.b*
+### 2.a — Network-Unaware Susceptibility Model (BCE Prior)
+**Goal:** Establish the independent probability of user $u$ joining event $e$, completely isolated from graph propagation dynamics. This acts as the base susceptibility prior for the complex contagion simulation.
 
-**Goal**: empirically estimate $\beta_1$ (pairwise infection rate) and $\beta_2$
-(social reinforcement) from observed RSVP cascades, rather than assuming them.
+**Architecture & Training:**
+1.  **Input Features:** 
+    *   User vector: Concatenation of historical RSVP frequency, categorical category affinities (One-Hot Encoded), and demographic data.
+    *   Event vector: Event category, organizer ID, time of day/week, geographic coordinates.
+2.  **Embedding:** Learn separate embeddings for User and Event vectors using a 2-layer Multi-Layer Perceptron (MLP).
+3.  **Forward Pass:** Calculate the dot product of the User and Event embeddings, passed through a sigmoid activation to output $P_{indep}(u, e) \in (0, 1)$.
+4.  **Loss Function:** Binary Cross-Entropy (BCE) trained strictly on historical, temporally split RSVP logs (1 = attended, 0 = exposed but did not attend).
 
-**Method**:
+### 2.b — Calibrated Complex Contagion Simulation Schema
+**Goal:** Integrate the prior $P_{indep}(u, e)$ into the complex contagion formulation to simulate realistic cascade dynamics on the final 10% chronological holdout set.
 
-1. For each (user $u$, event $e$) pair where $u$ RSVPed yes, compute the **social
-   exposure at RSVP time**: the number of $u$'s co-occurrence graph neighbors who had
-   already RSVPed yes to $e$ before $u$ did (using `rsvps.created` ordering).
-2. Bin by social exposure count $k = 0, 1, 2, 3, 4+$.
-3. Compute empirical $P(\text{RSVP yes} \mid \text{exposure} = k)$ for each bin.
-4. Fit the complex contagion curve:
-   $$P(k) = 1 - (1 - \beta_1)^k + \beta_2 \cdot \mathbf{1}[k \geq 2]$$
-   or a more general form: $P(k) = \sigma(a + b \cdot k + c \cdot \mathbf{1}[k \geq 2])$
-5. Extract $\hat\beta_1, \hat\beta_2$ from the fit.
+**Mathematical Schema:**
+Standard complex contagion assumes uniform node susceptibility. We modify this to be highly heterogeneous.
+Let $k$ be the number of user $u$'s neighbors who have already RSVP'd to event $e$.
+Let $\beta_1$ be the baseline pairwise transmission rate.
+Let $\beta_2$ be the social reinforcement rate triggered at a threshold (e.g., $k \ge 2$).
 
-**Validation**:
-- If $P(k)$ is superlinear in $k$, complex contagion is confirmed in the data.
-- If linear or sublinear, simple IC is sufficient and $\beta_2 \approx 0$.
-- Report $\hat\beta_2 / \hat\beta_1$ as the "social reinforcement multiplier".
+The modified probability that user $u$ RSVPs at time step $t$, $P_{join}(u, e | k)$, is defined as the union of independent attendance and socially driven attendance:
 
-**Output**: calibrated $(\hat\beta_1, \hat\beta_2)$ for the cascade simulator in Phase 4.
+`P_join(u, e | k) = P_indep(u, e) + (1 - P_indep(u, e)) * [ 1 - (1 - beta_1)^k + beta_2 * I[k >= 2] ]`
 
-### 2.b — ML Data Preparation
-*Depends on: Phase 1.a, 1.b*
-*Can run in parallel with: 2.a*
+*Note: $\mathbb{I}$ is the indicator function. The parameters $\beta_1$ and $\beta_2$ are empirically derived via grid search to minimize the distributional distance (Wasserstein distance) between simulated cascade sizes and historical cascade sizes in the validation set.*
 
-1. **Temporal train/val/test split** — split events by time (70/15/15). Never random
-   split — temporal ordering prevents leakage (a model seeing future RSVPs would have
-   inflated performance on past events).
-2. **Negative sampling** — for each positive (user, event) RSVP pair in training data,
-   sample $k$ negative pairs (user was in the geographic radius of the event but did not
-   RSVP). Negatives should be plausible non-attendees, not random users.
-3. **Feature matrix** — assemble node features from 1.b into tensors.
-4. **Graph snapshots** — for each held-out event $e_t$, construct graph $G_t$ using only
-   RSVPs from events that were posted strictly before $t$. This is the exact graph state
-   a seeding model would observe at event-post time.
+### 2.d — Cascade Simulation Execution Mechanics
+**Goal:** Define the discrete time-step mechanics of how a cascade unfolds once a model has selected a seed set $S$. This simulator acts as the environment for both imitation learning pretraining, DRL reward calculation, and final evaluation.
+
+**Simulation Algorithm:**
+The simulation follows a discrete-time, monotonic Susceptible-Infected (SI) contagion model on the pairwise co-occurrence graph. Once a user RSVPs (becomes Infected), they remain in that state and continuously exert social pressure on their susceptible neighbors.
+
+1.  **Initialization ($t=0$):** 
+    *   The model outputs a seed set of size $K$.
+    *   The active RSVP set is initialized as $I_0 = S$.
+    *   The susceptible pool is defined as $V_{sus} = V \setminus I_0$.
+2.  **Propagation Step ($t$ to $t+1$):**
+    *   Identify the candidate frontier: any susceptible user $u \in V_{sus}$ who shares an edge with at least one user in $I_t$.
+    *   For each candidate $u$, calculate their current social exposure: $k_u = | \mathcal{N}(u) \cap I_t |$.
+    *   Calculate their dynamic infection probability $P_{join}(u, e \mid k_u)$ using the calibrated schema defined in 2.b.
+3.  **Activation Sampling:**
+    *   For each candidate $u$, sample a random float $x \sim \text{Uniform}(0, 1)$.
+    *   If $x < P_{join}(u, e \mid k_u)$, the user RSVPs. They are added to the newly infected set $\Delta I$.
+4.  **State Update:**
+    *   $I_{t+1} = I_t \cup \Delta I$.
+    *   $V_{sus} = V_{sus} \setminus \Delta I$.
+5.  **Termination Condition:**
+    *   The simulation advances to the next time step until either $\Delta I = \emptyset$ (no new RSVPs in the current step) or $|I_{t+1}|$ reaches the event's hard capacity limit. 
+    *   The final cascade size is $|I_{final}|$.
+
+### 2.d — Data Preparation Pipeline
+1.  **Graph Tensors:** Construct bipartite (user-event) and homogeneous (user-user via co-attendance) adjacency matrices.
+2.  **Edge Weights:** Implement a time-decay factor for user-user edges. Edge weight $w_{u,v} = \sum \exp(-\lambda \cdot \Delta t)$, where $\Delta t$ is days since co-attendance.
+3.  **Temporal Leakage Prevention:** Split events strictly chronologically (e.g., Train: 2019-2021, Val: Jan-Jun 2022, Test: Jul-Dec 2022). The homogeneous graph at time $T$ must only contain edges formed prior to $T$.
 
 ---
 
-## Phase 3: Model Development
+# Phase 3: Model Development
 
-*All sub-phases can be developed in parallel once Phase 2 is complete.*
-*Phase 3.e additionally depends on Phase 2.a for the cascade reward signal.*
+All sub-phases can be developed in parallel once Phase 2 is complete. 
+
+### Universal Two-Stage Training Regime
+To rigorously evaluate the impact of training methodology versus architectural complexity, **all machine learning models (M1, M2, M3, M4)** will be trained using a standardized two-stage pipeline. Every model operates autoregressively, maintaining an internal context of the already-selected seed set $S_t$.
+
+*   **Stage 1: Imitation Learning Pretraining (IL)**
+    *   **Goal:** Bootstrapping the models to approximate an exhaustive greedy search of the simulation environment.
+    *   **Process:** For a given event and partial seed set $S_t$, the calibrated simulator (Phase 2.b) tests *every* valid candidate node $v \notin S_t$ and records the expected cascade size $C_v$. 
+    *   **Optimization:** We apply a softmax over all $C_v$ to create a target probability distribution. All models are trained via cross-entropy (or KL divergence) to align their predicted selection scores with this optimal target distribution.
+
+*   **Stage 2: Deep Reinforcement Learning (DRL)**
+    *   **Goal:** Transition the pretrained models into an interactive environment to optimize for the dual objective (cascade spread vs. residual network health). We will use Proximal Policy Optimization (PPO) or DQN depending on the model's stability.
+    *   **MDP Formulation:**
+        *   **State ($s_t$):** $(G, S_t, e)$ — graph state, current seed set, event context.
+        *   **Action ($a_t$):** Add user $u \notin S_t$ to $S_t$.
+        *   **Reward ($r_t$):** $\Delta$ cascade RSVPs from adding $u$ minus a penalty for selecting nodes with high centrality or recent notification history:
+            $$r_t = \left[ \text{CascadeSize}(S_t \cup \{u\}) - \text{CascadeSize}(S_t) \right] - \alpha \cdot \text{BurnoutPenalty}(u)$$
+    *   **Optimization:** The models from Stage 1 are fine-tuned via RL gradients to maximize expected cumulative reward until the budget $K$ is exhausted.
+
+---
 
 ### 3.a — Baselines (B1, B2, B3)
-*Depends on: Phase 2.b — no ML training required*
-
+*Depends on: Phase 2.b — no ML training required.*
 Implement first. These set the performance floor and are required reference points.
 
-**B1 — Random Seeding**
+*   **B1 — Random Seeding:** Select $K$ users uniformly at random from the notification-eligible pool.
+*   **B2 — Degree Centrality Greedy:** Score eligible users by degree $d(u)$ in the co-occurrence graph, notify top-$K$. Represents the intuitive default: "always notify the most connected people." Fast, but destroys residual graph quality.
+*   **B3 — CELF Greedy (Simple IC):** The Leskovec et al. (2007) Cost-Effective Lazy Forward greedy algorithm, achieving a $(1-1/e) \approx 0.63$ approximation of the optimal seed set under the Independent Cascade model. The theoretical gold standard for simple-contagion maximization.
 
-Select $K$ users uniformly at random from the notification-eligible pool (within
-distance threshold, not in cooldown, preferences allow). True floor; should be beaten
-by everything else.
+### 3.b — Pointwise MLP Autoregressive Ranker (M1)
+*No graph structure — establishes the value-add of graph awareness.*
 
-**B2 — Degree Centrality Greedy**
-
-Score eligible users by degree $d(u)$ in the co-occurrence graph, notify top-$K$.
-Represents the intuitive default: "always notify the most connected people." Fast,
-requires no training, but ignores event-user fit and destroys residual graph quality
-by systematically burning hubs.
-
-**B3 — CELF Greedy (Simple IC)**
-
-The Leskovec et al. (2007) Cost-Effective Lazy Forward greedy algorithm, which
-achieves a $(1 - 1/e) \approx 0.63$ approximation of the optimal seed set under the
-Independent Cascade model. Edge propagation probabilities set proportional to
-normalized co-occurrence weight. This is the theoretical gold standard for
-simple-contagion influence maximization — all DL models should be compared against it.
-The gap between CELF and DL models quantifies the value of (a) complex contagion
-awareness and (b) personalized event-user matching.
-
----
-
-### 3.b — Pointwise MLP RSVP Ranker (M1)
-*Depends on: Phase 2.b*
-*No graph structure — establishes the value-add of graph awareness*
-
-**Architecture**: 3-layer MLP on concatenated scalar features:
-- $\cos(z_u, z_e)$ — cosine similarity between user embedding and event embedding
-- Geographic distance $d(u, e)$
-- Category match: dot product of user category affinity vector and event category one-hot
-- User historical RSVP rate (total yes RSVPs / total events exposed to)
-- Event recency, current RSVP count, event size limit
-
-**Training**: binary cross-entropy on (user, event, RSVP=0/1) pairs.
-
-**Seeding**: score all eligible users, select top-$K$.
-
-**Why include this**: if M1 matches the GNN models, graph structure isn't adding
-measurable value and a simpler production system is preferable. This is the baseline
-that proves or disproves the need for graph-aware models.
-
----
+*   **Architecture:** 3-layer MLP on concatenated scalar features:
+    *   $\cos(z_u, z_e)$ — cosine similarity between user and event embeddings.
+    *   Geographic distance $d(u,e)$.
+    *   Category match: dot product of user category affinity vector and event category one-hot.
+    *   User historical RSVP rate.
+    *   Event recency, current RSVP count, event size limit.
+    *   **Autoregressive Context:** A dynamically updated vector representing the aggregated scalar features of the selected seed set $S_t$.
+*   **Seeding:** Iteratively score all eligible users against the updated context, select the top-$1$, append to $S_t$, update context, and repeat until budget $K$.
 
 ### 3.c — LightGCN Collaborative Filter (M2)
-*Depends on: Phase 2.b*
+*Uses the bipartite attendance graph only — answers if knowing who attends similar events helps without explicit social graph structure.*
 
-**Architecture**: LightGCN (He et al. 2020) on the bipartite user-event graph.
-Propagation averages neighbor embeddings without non-linearity or feature transformation:
-$$e_u^{(k+1)} = \sum_{e \in \mathcal{N}(u)} \frac{1}{\sqrt{|\mathcal{N}(u)||\mathcal{N}(e)|}} e_e^{(k)}, \quad
-e_e^{(k+1)} = \sum_{u \in \mathcal{N}(e)} \frac{1}{\sqrt{|\mathcal{N}(e)||\mathcal{N}(u)|}} e_u^{(k)}$$
-
-Final user/event embeddings: mean across $K$ propagation layers. Score (user, event)
-pair by dot product of final embeddings.
-
-**Training**: Bayesian Personalized Ranking (BPR) loss on (user, positive event,
-negative event) triples.
-
-**Seeding**: score new event $e_\text{new}$ against all eligible users, select top-$K$.
-
-**Why include this**: standard collaborative filtering GNN baseline. Uses the bipartite
-attendance graph only — no co-occurrence graph, no structural features, no event
-cross-attention. Answers: "does knowing who attends similar events help, even without
-explicit social graph structure?"
-
----
+*   **Architecture:** LightGCN (He et al. 2020) on the bipartite user-event graph. Propagation averages neighbor embeddings without non-linearity:
+    $$e_u^{(k+1)} = \sum_{e \in \mathcal{N}(u)} \frac{1}{\sqrt{|\mathcal{N}(u)||\mathcal{N}(e)|}} e_e^{(k)}, \quad e_e^{(k+1)} = \sum_{u \in \mathcal{N}(e)} \frac{1}{\sqrt{|\mathcal{N}(e)||\mathcal{N}(u)|}} e_u^{(k)}$$
+    Final user/event embeddings are the mean across $K$ propagation layers.
+*   **Seeding (Autoregressive):** The model scores nodes via dot products. To maintain autoregression, candidates sharing high bipartite overlap with $S_t$ receive a dynamically calculated structural penalty, forcing the model to explore distinct event-clusters.
 
 ### 3.d — GAT Dual-Head Scorer (M3)
-*Depends on: Phase 2.b*
+*Operates on the pairwise co-occurrence graph with the event embedding as a global conditioning signal.*
 
-The primary graph-aware model. Operates on the pairwise co-occurrence graph with the
-new event's embedding as a global conditioning signal.
+*   **Architecture:**
+    *   **Node features:** Concatenation of user embedding (384-dim), structural features (degree, betweenness, clustering), behavioral features, and cooldown state.
+    *   **Graph encoder:** 3-layer GAT (Veličković et al. 2018), 8 attention heads per layer. Edge features injected as attention biases.
+    *   **Event cross-attention:** After GAT encoding, each node embedding is cross-attended with the event embedding $z_e$.
+    *   **Outputs:** An RSVP probability head and a Structural Value head (predicting network health contributions).
+*   **Seeding (Greedy Autoregressive):** 
+    1. Score eligible users: $s_u = \alpha \cdot \hat{P}(\text{RSVP}_u) + (1-\alpha) \cdot \hat{V}_u$
+    2. Select $u^* = \arg\max_u s_u$, add to seed set.
+    3. **Autoregressive step:** Downweight 1-hop neighbors of $u^*$ by their edge weight to $u^*$ (suppressing overlapping influence).
 
-**Architecture**:
+### 3.e — S2V Sequential Seeder (M4)
+*Unlike M3, which scores nodes and then applies an external neighbor-suppression heuristic, M4 explicitly passes the selected set $S_t$ into the graph convolutions to learn the combinatorial value natively.*
 
-1. **Node features**: concatenation of user embedding (384-dim), structural features
-   (degree, betweenness, clustering coefficient), behavioral features (category affinity,
-   RSVP rate), cooldown state (days since last notification).
-2. **Graph encoder**: 3-layer GAT (Veličković et al. 2018), 8 attention heads per layer.
-   Edge features (co-occurrence weight, recency-weighted weight) injected as attention
-   biases.
-3. **Event cross-attention**: after GAT encoding, each node embedding is cross-attended
-   with the event embedding $z_e$ (event as query, nodes as keys/values). This
-   conditions scores on the specific event being promoted rather than producing
-   context-free user rankings.
-4. **Two output heads**:
-   - **RSVP head**: $\hat P(\text{RSVP} \mid u \text{ notified}, e)$ — trained
-     supervised on RSVP labels via binary cross-entropy.
-   - **Structural value head**: $\hat V(u \mid G)$ — trained with self-supervised
-     targets (normalized betweenness, local algebraic connectivity contribution)
-     during pre-training, then updated via reward signal.
-
-**Selection**: greedy with neighbor suppression:
-- Score eligible users: $s_u = \alpha \cdot \hat P(\text{RSVP}_u) + (1-\alpha) \cdot \hat V_u$
-- Select $u^* = \arg\max_u s_u$, add to seed set
-- Downweight 1-hop neighbors of $u^*$ by their edge weight to $u^*$ (they will likely
-  hear about the event organically through the already-selected user)
-- Repeat until budget $K$ is exhausted
-
-**Ablations to run** (see Phase 5.d): RSVP head only; no neighbor suppression;
-no event cross-attention; no structural value head.
+*   **Architecture:** Based on structure2vec (Dai et al. 2017).
+    $$\mu_u^{(t+1)} = \text{ReLU}\left(\theta_1 x_u + \theta_2 \sum_{v \in \mathcal{N}(u)} w(u,v)\mu_v^{(t)} + \theta_3 \sum_{v \in S_t} \mu_v^{(t)}\right)$$
+    The $\theta_3$ term natively encodes which users are already seeded, allowing the network to internally learn decreasing marginal returns and natural diversity without external heuristics.
+*   **Seeding:** The Q-function scores candidate additions dynamically based on the S2V embeddings at step $t$.
 
 ---
 
-### 3.e — S2V-DQN Sequential Seeder (M4)
-*Depends on: Phase 2.b, Phase 2.a (cascade simulator as reward during training)*
+# Phase 4: Comprehensive Evaluation Framework
 
-A reinforcement learning agent that selects seed users one at a time, learning the value
-of each addition *given the users already selected*. Based on structure2vec-DQN
-(Dai et al. 2017).
+### 4.a — Monte Carlo Evaluation Harness
+**Goal:** Standardize how the simulation is executed across the test holdout set to ensure fair, reproducible benchmarking for the Results Matrix.
 
-Unlike M3 which scores users independently then applies a greedy heuristic, M4
-learns the *combinatorial* value of a seed set — it explicitly represents "I already
-selected A, so selecting A's close co-attendee B is now less valuable."
+Because the contagion simulation relies on probabilistic activation sampling, a single run is highly subject to variance. To evaluate the true expected value of a model's seeding policy, we must run a Monte Carlo simulation for every event.
 
-**MDP formulation**:
-- **State** at step $t$: $(G, S_t, e)$ — graph with node features, current seed set,
-  event context
-- **Action**: add user $u \notin S_t$ to $S_t$
-- **Reward**: $\Delta$ cascade RSVPs from adding $u$, estimated via the calibrated
-  complex contagion simulator (Monte Carlo, $M=50$ samples per step during training)
-- **Episode terminates** when $|S_t| = K$ (budget exhausted) or event capacity would
-  be saturated
+**Evaluation Loop:**
+For every event $e$ in the final **10% chronological test holdout set**:
+1.  **Graph Snapshot Loading:** Load $G_e$, which contains only nodes and edges that existed strictly prior to the timestamp of event $e$.
+2.  **Seed Selection:** The model under evaluation processes $G_e$ and event features to output its optimal seed set $S_e$.
+3.  **Monte Carlo Trials:**
+    *   Instantiate the simulation (defined in 2.d) using $S_e$.
+    *   Execute $M=1000$ independent trials of the simulation to completion.
+    *   Record the cascade size for each trial: $C_1, C_2, \dots, C_{1000}$.
+4.  **Event-Level Metric Aggregation:**
+    *   Calculate Expected Success: $\mathbb{E}[|C|] = \frac{1}{1000} \sum C_m$.
+    *   Calculate Expected Efficiency: $\eta = \mathbb{E}[|C|] / K$.
+5.  **Residual Health Calculation:**
+    *   Simulate the "burnout" by removing $S_e$ from the graph snapshot.
+    *   Calculate $\Delta\lambda_2 = \lambda_2(G_e) - \lambda_2(G_e \setminus S_e)$ using power iteration.
+6.  **Global Aggregation:** Average the expected success, efficiency, and health metrics across all test events to populate the final row for this model in the 5.a Results Matrix.
 
-**Network**: structure2vec message passing with explicit selected-set context:
-$$\mu_u^{(t+1)} = \text{ReLU}\!\left(\theta_1 x_u + \theta_2 \sum_{v \in N(u)} w(u,v)\,\mu_v^{(t)} + \theta_3 \sum_{v \in S_t} \mu_v^{(t)}\right)$$
+### 4.b — Benchmark Run and Results Matrix
+Run all models on the full test event set (last 10% chronological holdout). Because all ML models are subjected to the two-stage training regime, the final evaluation matrix will explicitly break out performance by training stage (Imitation vs. DRL).
 
-The $\theta_3$ term is the key difference — it encodes which users are already seeded
-so the network learns decreasing marginal returns and natural diversity. Q-function:
-$$Q(S_t, u) = \theta_4^\top \cdot \text{ReLU}\!\left(\left[\theta_5 \cdot \sum_{v \in V} \mu_v,\; \theta_6 \cdot \mu_u\right]\right)$$
+*Metrics tracked:*
+*   **Success:** Mean simulated cascade size (RSVPs).
+*   **Health:** $\Delta\lambda_2$ (Algebraic Connectivity Fiedler value). A smaller drop indicates better preservation of residual network capacity.
+*   **Efficiency:** Notifications sent per RSVP gained.
+*   **RL Objective:** Mean episode reward achieved in the simulator.
+*   **Runtime:** Wall-clock inference runtime per event in milliseconds.
 
-**Training**: DQN with experience replay and target network. Warm-start from M3 RSVP
-head predictions to avoid cold exploration.
-
-**Why include this**: only model that optimizes directly for cascade spread under the
-calibrated complex contagion model. The gap between M4 and M3 quantifies the value of
-learned sequential decision-making over independent scoring + greedy selection.
-
----
-
-## Phase 4: Evaluation Framework
-
-*Can be developed in parallel with Phase 3. Depends on Phase 2.a for contagion parameters.*
-
-### 4.a — Monte Carlo Cascade Simulator
-*Depends on: Phase 2.a*
-
-Implements the calibrated complex contagion spread on the pairwise co-occurrence graph:
-
-1. Initialize infected set $I = S$ (seed set)
-2. For each susceptible node $u$, compute social exposure:
-   $$k_u = |\{v \in N(u) : v \in I\}|$$
-3. Infection probability using calibrated parameters:
-   $$P(\text{infect}\,u) = 1 - (1-\hat\beta_1)^{k_u} + \hat\beta_2 \cdot \mathbf{1}[k_u \geq 2]$$
-4. Sample infections; add newly infected to $I$; repeat until no new infections
-   or event capacity reached
-5. Run $M = 1000$ independent trials; report mean ± std RSVPs
-
-**Sensitivity**: also run with $\beta_2 = 0$ (simple IC) to quantify the contribution
-of complex contagion dynamics to the results.
-
-### 4.b — Residual Graph Quality Metrics
-
-After selecting seed set $S$ (which enters cooldown), compute quality of
-$G' = G \setminus S$:
-
-| Metric | Interpretation | Compute method |
-|--------|---------------|----------------|
-| $\Delta\lambda_2$ | Change in algebraic connectivity (Fiedler value) of graph Laplacian | Power iteration on $L(G')$ |
-| 2-hop coverage | Fraction of $V \setminus S$ reachable within 2 hops from $V \setminus S$ | BFS |
-| $\Delta R_\text{eff}$ | Change in sum of pairwise effective resistances | Johnson-Lindenstrauss random projection estimate |
-
-Report all three; $\Delta\lambda_2$ is the primary residual quality metric.
-
-### 4.c — Evaluation Harness
-
-For each held-out event $e_t$ in the test split:
-1. Construct graph snapshot $G_t$ (RSVPs prior to $t$ only)
-2. Apply each model to select seed set $S$ of size $K$
-3. Run cascade simulator from $S$ on $G_t$
-4. Compute residual graph metrics for $G_t$ after removing $S$ from eligible pool
-5. Record: cascade RSVPs, notifications-per-RSVP, $\Delta\lambda_2$, coverage,
-   wall-clock runtime
-
----
-
-## Phase 5: Comparative Evaluation
-
-*Depends on: Phase 3 + Phase 4*
-
-### 5.a — Benchmark Run
-
-Run all 7 models on the full test event set.
-
-| Model | Mean RSVPs ↑ | Notifs/RSVP ↓ | $\Delta\lambda_2$ ↑ | 2-hop coverage ↑ | Runtime |
-|-------|------------|----------------|---------------------|-----------------|---------|
-| B1 Random | | | | | |
-| B2 Degree | | | | | |
-| B3 CELF-IC | | | | | |
-| M1 MLP | | | | | |
-| M2 LightGCN | | | | | |
-| M3 GAT | | | | | |
-| M4 S2V-DQN | | | | | |
-
-### 5.b — Statistical Testing
-
-Bootstrap confidence intervals on mean cascade RSVPs. Pairwise Wilcoxon signed-rank
-tests between all model pairs, Holm-Bonferroni corrected for multiple comparisons.
-Identify which improvements are statistically significant vs. noise.
-
-### 5.c — Sensitivity Analysis
-
-Run all models under these sweeps:
-
-- **Budget $K$**: 5, 10, 25, 50, 100 — does model ranking change at different budget sizes?
-- **$\beta_2 / \beta_1$ ratio**: 0 (simple IC), 0.5, 1.0, 2.0, 5.0 — how sensitive are
-  conclusions to the assumed strength of social reinforcement?
-- **Cooldown period $C$**: 1 day, 3 days, 7 days, 14 days — how does tighter rate
-  limiting change which strategy wins?
-- **Graph density**: bin test events by local subgraph density around the event location;
-  measure model performance per bin — do GNN models especially benefit on
-  tightly-clustered graphs?
-
-### 5.d — Ablations (M3 GAT)
-
-| Ablation | What it tests |
-|----------|--------------|
-| RSVP head only (remove $\hat V$) | Does optimizing for residual quality come at a cascade cost? |
-| No neighbor suppression | Does explicit diversity in selection help beyond what the graph encoder learns? |
-| No event cross-attention | Does conditioning on event features matter vs. context-free user rankings? |
-| No structural features (degree, betweenness, clustering) | How much do precomputed graph statistics contribute beyond GNN-learned structure? |
+| Model & Training Phase | Mean RSVPs ↑ | $\Delta\lambda_2$ ↓ | Notifs / RSVP ↓ | Mean Episode Reward ↑ | Inference Runtime (ms) ↓ |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **B1 Random** | | | | N/A | |
+| **B2 Degree Centrality** | | | | N/A | |
+| **B3 CELF-IC** | | | | N/A | |
+| **M1 MLP (IL Only)** | | | | | |
+| **M1 MLP (+ DRL)** | | | | | |
+| **M2 LightGCN (IL Only)** | | | | | |
+| **M2 LightGCN (+ DRL)**| | | | | |
+| **M3 GAT (IL Only)** | | | | | |
+| **M3 GAT (+ DRL)** | | | | | |
+| **M4 S2V (IL Only)** | | | | | |
+| **M4 S2V (+ DRL)** | | | | | |
 
 ---
 
