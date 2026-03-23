@@ -1,15 +1,39 @@
+# %%
 # process_graphs.py
 """
 This file contains a script used to process the bipartite graph into a multi-scale bakboned
 simple weighted coocurrance graph and a seperate 2-simplex weighted coocurrance graph.
 """
 
+from anyio import Path
 import networkx as nx
 import scipy.sparse as sp
 import numpy as np
 import torch
 import itertools
 from collections import defaultdict
+
+def load_bipartite_artifacts(input_dir="data"):
+    """
+    Loads the GraphML and member list into memory.
+    Returns:
+        G_bipartite (nx.Graph): The loaded bipartite graph.
+        member_nodes (list of str): The list of user node IDs.
+    """
+    in_path = Path.cwd() / input_dir
+    
+    # 1. Load GraphML
+    # Note: LXML parser is automatically used if installed, optimizing I/O latency.
+    print("Loading bipartite graph from GraphML...")
+    G_bipartite = nx.read_graphml(in_path / "G_bipartite.graphml")
+    
+    # 2. Load member nodes
+    print("Loading member nodes...")
+    with open(in_path / "member_nodes.csv", 'r') as f:
+        member_nodes = [line.strip() for line in f]
+        
+    print(f"Loaded {len(member_nodes)} member nodes.")
+    return G_bipartite, member_nodes
 
 def process_multiplex_graph(bipartite_graph, user_nodes, alpha=0.05, max_event_size=50):
     """
@@ -122,3 +146,115 @@ def process_multiplex_graph(bipartite_graph, user_nodes, alpha=0.05, max_event_s
         edge_attr_2 = torch.tensor(edge_attr_2, dtype=torch.float)
         
     return edge_index_1, edge_attr_1, edge_index_2, edge_attr_2
+
+
+import pandas as pd
+import networkx as nx
+import torch
+from pathlib import Path
+
+def generate_user_features(user_nodes, edge_index_1, edge_attr_1, edge_index_2, edge_attr_2, raw_dir="data/raw", out_dir="data", n=10):
+    """
+    Ingests raw data and PyG tensors to generate a flat, production-ready feature matrix.
+    """
+    raw_path = Path(raw_dir)
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    
+    print("Initializing feature matrix...")
+    # Base dataframe aligned with user_nodes
+    df_features = pd.DataFrame({'member_id': user_nodes}).set_index('member_id')
+
+    # --- 1. Load & Process Metadata ---
+    print("Processing spatial metadata...")
+    df_members = pd.read_csv(raw_path / "meta-members.csv", usecols=['member_id', 'lat', 'lon']).set_index('member_id')
+    df_features = df_features.join(df_members, how='left')
+
+    # --- 2. Process Group Behavior ---
+    print("Processing group membership counts...")
+    df_mem_groups = pd.read_csv(raw_path / "member-to-group_edges.csv")
+    group_counts = df_mem_groups.groupby('member_id').size().rename('group_count')
+    df_features = df_features.join(group_counts, how='left').fillna({'group_count': 0})
+
+    # --- 3. Process Temporal Event Sequences ---
+    print("Extracting chronological event sequences...")
+    df_rsvps = pd.read_csv(raw_path / "rsvps.csv", usecols=['member_id', 'event_id'])
+    df_events = pd.read_csv(raw_path / "meta-events.csv", usecols=['event_id', 'time'])
+    
+    # Join to get timestamps, sort, and extract the latest 10
+    df_rsvps_time = df_rsvps.merge(df_events, on='event_id')
+    df_rsvps_time['time'] = pd.to_datetime(df_rsvps_time['time'])
+    df_rsvps_time = df_rsvps_time.sort_values(by=['member_id', 'time'], ascending=[True, False])
+    
+    # Group by member, take top 10, and format as comma-separated string
+    last_n_events = (
+        df_rsvps_time.groupby('member_id')
+        .head(n)
+        .groupby('member_id')['event_id']
+        .apply(lambda x: ','.join(x.astype(str)))
+        .rename('last_n_events')
+    )
+    df_features = df_features.join(last_n_events, how='left')
+
+    # --- 4. Process Network Features ---
+    print("Reconstructing 1-simplex graph for topological metrics...")
+    G_backbone = nx.Graph()
+    G_backbone.add_nodes_from(user_nodes) # Ensure disconnected nodes are included
+    
+    # Map contiguous integer indices back to original member_ids
+    sources_1 = edge_index_1[0].numpy()
+    targets_1 = edge_index_1[1].numpy()
+    edges_1 = [(user_nodes[s], user_nodes[t]) for s, t in zip(sources_1, targets_1)]
+    G_backbone.add_edges_from(edges_1)
+
+    print("Computing Degree, PageRank, and Clustering...")
+    df_features['degree_1_simplex'] = pd.Series(dict(G_backbone.degree()))
+    df_features['pagerank'] = pd.Series(nx.pagerank(G_backbone, alpha=0.85))
+    df_features['clustering_coeff'] = pd.Series(nx.clustering(G_backbone))
+
+    print("Computing 2-simplex participation...")
+    # edge_index_2 contains clique edges. Node frequency correlates to triangle participation.
+    if edge_index_2.numel() > 0:
+        nodes_in_2_simplices = edge_index_2.flatten().numpy()
+        # Map back to original IDs
+        mapped_nodes = [user_nodes[n] for n in nodes_in_2_simplices]
+        simplicial_counts = pd.Series(mapped_nodes).value_counts().rename('simplicial_degree')
+        df_features = df_features.join(simplicial_counts, how='left').fillna({'simplicial_degree': 0})
+    else:
+        df_features['simplicial_degree'] = 0.0
+
+    # --- 5. Finalize and Export ---
+    print("Exporting feature matrix...")
+    df_features.to_csv(out_path / "user_features.csv")
+    print(f"Successfully generated features for {len(df_features)} users.")
+    
+    return df_features
+
+
+if __name__ == "__main__":
+    # Load bipartite graph and member nodes
+    G_bipartite, member_nodes = load_bipartite_artifacts(input_dir="data")
+    print(f"Loaded bipartite graph with {G_bipartite.number_of_nodes()} nodes and {G_bipartite.number_of_edges()} edges.")
+    
+    # Process the bipartite graph into PyG tensors
+    edge_index_1, edge_attr_1, edge_index_2, edge_attr_2 = process_multiplex_graph(
+        G_bipartite, 
+        member_nodes, 
+        alpha=0.05, 
+        max_event_size=50
+    )
+    print(f"Processed multiplex graph: {edge_index_1.shape[1]} 1-simplices and {edge_index_2.shape[1]//6} 2-simplices.")
+    
+    # Generate user features and export to CSV
+    df_user_features = generate_user_features(
+        member_nodes, 
+        edge_index_1, 
+        edge_attr_1, 
+        edge_index_2, 
+        edge_attr_2, 
+        raw_dir="data/raw", 
+        out_dir="data",
+        n=10
+    )
+    print("Feature generation complete. Sample output:")
+    print(df_user_features.head())
