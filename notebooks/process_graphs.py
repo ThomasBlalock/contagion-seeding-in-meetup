@@ -14,26 +14,14 @@ import itertools
 from collections import defaultdict
 
 def load_bipartite_artifacts(input_dir="data"):
-    """
-    Loads the GraphML and member list into memory.
-    Returns:
-        G_bipartite (nx.Graph): The loaded bipartite graph.
-        member_nodes (list of str): The list of user node IDs.
-    """
     in_path = Path.cwd() / input_dir
-    
-    # 1. Load GraphML
-    # Note: LXML parser is automatically used if installed, optimizing I/O latency.
-    print("Loading bipartite graph from GraphML...")
     G_bipartite = nx.read_graphml(in_path / "G_bipartite.graphml")
     
-    # 2. Load member nodes
-    print("Loading member nodes...")
     with open(in_path / "member_nodes.csv", 'r') as f:
         member_nodes = [line.strip() for line in f]
         
-    print(f"Loaded {len(member_nodes)} member nodes.")
     return G_bipartite, member_nodes
+
 
 def process_multiplex_graph(bipartite_graph, user_nodes, alpha=0.05, max_event_size=50):
     """
@@ -54,7 +42,7 @@ def process_multiplex_graph(bipartite_graph, user_nodes, alpha=0.05, max_event_s
     print("Mapping user nodes to contiguous indices...")
     user_to_idx = {u: i for i, u in enumerate(user_nodes)}
     
-    event_nodes = set(bipartite_graph.nodes()) - set(user_nodes)
+    event_nodes = [n for n, attr in bipartite_graph.nodes(data=True) if attr.get('type') == 'event']
     event_to_users_dict = {}
     
     for event in event_nodes:
