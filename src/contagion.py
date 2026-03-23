@@ -238,6 +238,44 @@ class SCMSimulator:
             if self.current_state[j] == 1 and self.current_state[k] == 1:
                 count += 1
         return count
+    
+
+import numpy as np
+from scipy.stats import wasserstein_distance
+
+def calibrate_parameters(simulator_factory, historical_cascade_sizes, param_grid):
+    """
+    Finds beta_1 and beta_2 that minimize Wasserstein distance to ground truth.
+    
+    Args:
+        simulator_factory: A lambda or function that returns a new SCMSimulator 
+                           initialized with a specific beta pair.
+        historical_cascade_sizes: List of final RSVP counts from your Meetup data.
+        param_grid: List of (beta_1, beta_2) tuples to test.
+    """
+    best_dist = float('inf')
+    best_params = None
+    
+    for b1, b2 in param_grid:
+        sim_results = []
+        
+        # Run M trials to get a distribution for this parameter set
+        for _ in range(50): 
+            sim = simulator_factory(b1, b2)
+            history = sim.run(t_max=100)
+            # Final cascade size = final density * N
+            sim_results.append(history[-1] * sim.N)
+            
+        dist = wasserstein_distance(historical_cascade_sizes, sim_results)
+        
+        if dist < best_dist:
+            best_dist = dist
+            best_params = (b1, b2)
+            print(f"New Best! b1:{b1:.4f}, b2:{b2:.4f} | Dist: {dist:.4f}")
+            
+    return best_params
+
+
 # %%
 # Example Usage
 
