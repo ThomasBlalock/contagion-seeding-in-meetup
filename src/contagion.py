@@ -4,6 +4,33 @@ import random
 import math
 
 
+class NodeSusceptibilityModel:
+    def __init__(self, node_features, base_beta=0.03, base_beta_delta=0.1):
+        """
+        Stores the feature matrix and parameters needed to calculate probabilities.
+        """
+        self.node_features = node_features
+        self.base_beta = base_beta
+        self.base_beta_delta = base_beta_delta
+
+    def __call__(self, node_id):
+        """
+        Calculates beta and beta_delta for a specific node_id.
+        """
+        # Example logic: scale baseline probabilities by a specific node feature.
+        # Replace this with your actual Phase 2.a Network-Unaware model forward pass.
+        feature_multiplier = self.node_features[node_id][0].item() 
+        
+        beta = self.base_beta * feature_multiplier
+        beta_delta = self.base_beta_delta * feature_multiplier
+        
+        # Clamp to valid probability bounds
+        beta = max(0.0, min(1.0, beta))
+        beta_delta = max(0.0, min(1.0, beta_delta))
+        
+        return beta, beta_delta
+
+
 class RSCGenerator:
     def __init__(self, k_avg, k_delta_avg, N=2000):
         self.N = N
@@ -78,40 +105,93 @@ class RandomSeeding:
         return initial_infected
 
 
+import numpy as np
+import random
+import math
+import torch
+
+class MultiplexTopologyAdapter:
+    def __init__(self, edge_index_1, edge_index_2, user_nodes):
+        """
+        Parses PyTorch Geometric tensors into the adjacency lists required by the simulator.
+        
+        Args:
+            edge_index_1: Tensor of shape (2, E1) for pairwise edges.
+            edge_index_2: Tensor of shape (2, E2) for flattened 2-simplices.
+            user_nodes: List of original user IDs. Index in list == simulator node_id.
+        """
+        self.user_nodes = user_nodes
+        self.N = len(user_nodes)
+        
+        self.links = [[] for _ in range(self.N)]
+        self.triangles = [[] for _ in range(self.N)]
+
+        self._build_links(edge_index_1)
+        self._build_triangles(edge_index_2)
+
+    def _build_links(self, edge_index_1):
+        if edge_index_1.numel() == 0:
+            return
+            
+        src, dst = edge_index_1.numpy()
+        for u, v in zip(src, dst):
+            self.links[u].append(v)
+
+    def _build_triangles(self, edge_index_2):
+        if edge_index_2.numel() == 0:
+            return
+            
+        src, dst = edge_index_2.numpy()
+        edge_set = set(zip(src, dst))
+        
+        # Build an intermediate adjacency list for the 2-simplex edges
+        adj_2 = [[] for _ in range(self.N)]
+        for u, v in zip(src, dst):
+            adj_2[u].append(v)
+            
+        # Reconstruct true (j, k) triangles for node i
+        for i in range(self.N):
+            neighbors = adj_2[i]
+            # Check all unique pairs of neighbors
+            for idx_j in range(len(neighbors)):
+                for idx_k in range(idx_j + 1, len(neighbors)):
+                    j = neighbors[idx_j]
+                    k = neighbors[idx_k]
+                    # If the neighbors are connected in the 2-simplex graph, it forms a triangle
+                    if (j, k) in edge_set:
+                        self.triangles[i].append((j, k))
+
+    def get_original_id(self, node_id):
+        return self.user_nodes[node_id]
+
+
 class SCMSimulator:
-    def __init__(self, links, triangles, initial_infected, beta, beta_delta, mu):
-        """Initializes the simulator with the given parameters.
-        Parameters:
-        - links: List of lists, where links[i] contains the neighbors of node i (1-simplices).
-        - triangles: List of lists, where triangles[i] contains tuples (j, k) representing 2-simplices that include node i.
-        - beta: Infection probability for 1-simplices.
-        - beta_delta: Infection probability for 2-simplices.
-        - mu: Recovery probability.
-        - initial_infected: List of node indices that are initially infected.
+    def __init__(self, links, triangles, initial_infected, susceptibility_func, mu=0.0):
+        """
+        Args:
+            links: 1-simplex adjacency list.
+            triangles: 2-simplex adjacency list.
+            initial_infected: List of integer node IDs to start infected.
+            susceptibility_func: Callable that takes (node_id) and returns (beta, beta_delta).
+            mu: Recovery probability (default 0.0 for monotonic SI contagion).
         """
         self.links = links
         self.triangles = triangles
         self.N = len(links)
 
-        self.beta = beta
-        self.beta_delta = beta_delta
+        self.susceptibility_func = susceptibility_func
         self.mu = mu
         
-        # 0 = Susceptible, 1 = Infected
         self.current_state = np.zeros(self.N, dtype=int)
         self.current_state[initial_infected] = 1
         
         self.rho_history = [np.mean(self.current_state)]
     
     def run(self, t_max):
-        """Executes the simulation for t_max timesteps."""
         for t in range(t_max):
             self._step()
-            if self.stable_state(): # Absorbing or steady state reached
-                # Pad for output len consistency & break early
-                self.rho_history.extend([
-                    self.rho_history[-1]
-                ] * (t_max - t - 1))
+            if self.stable_state(): 
+                self.rho_history.extend([self.rho_history[-1]] * (t_max - t - 1))
                 break
                 
         return self.rho_history
@@ -123,20 +203,25 @@ class SCMSimulator:
             return True
         return False
         
-
     def _step(self):
         next_state = np.copy(self.current_state)
         
         for i in range(self.N):
-            if self.current_state[i] == 1: # Infected
-                if random.random() < self.mu:
+            if self.current_state[i] == 1: 
+                if self.mu > 0 and random.random() < self.mu:
                     next_state[i] = 0
-            else: # Susceptible
+            else: 
                 m = self._count_infected_links(i)
                 n = self._count_infected_triangles(i)
                 
-                # Total infection probability
-                p_inf = 1.0 - ((1.0 - self.beta)**m)*((1.0 - self.beta_delta)**n)
+                # Skip calculation if no social exposure
+                if m == 0 and n == 0:
+                    continue
+                
+                # Dynamic susceptibility fetch
+                beta, beta_delta = self.susceptibility_func(i)
+                
+                p_inf = 1.0 - ((1.0 - beta)**m)*((1.0 - beta_delta)**n)
                 
                 if random.random() < p_inf:
                     next_state[i] = 1
