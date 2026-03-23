@@ -292,9 +292,6 @@ def analyze_feature_distributions(file_path="data/user_features.csv"):
     plt.savefig("data/feature_distributions.png")
     print("\nDiagnostic plot saved to: data/feature_distributions.png")
 
-if __name__ == "__main__":
-    analyze_feature_distributions()
-
 
 
 # %%
