@@ -160,7 +160,7 @@ def generate_user_features(user_nodes, edge_index_1, edge_attr_1, edge_index_2, 
 
     # --- 2. Process Group Behavior ---
     print("Processing group membership counts...")
-    df_mem_groups = pd.read_csv(raw_path / "member-to-group_edges.csv")
+    df_mem_groups = pd.read_csv(raw_path / "member-to-group-edges.csv")
     group_counts = df_mem_groups.groupby('member_id').size().rename('group_count')
     df_features = df_features.join(group_counts, how='left').fillna({'group_count': 0})
 
@@ -171,7 +171,7 @@ def generate_user_features(user_nodes, edge_index_1, edge_attr_1, edge_index_2, 
     
     # Join to get timestamps, sort, and extract the latest 10
     df_rsvps_time = df_rsvps.merge(df_events, on='event_id')
-    df_rsvps_time['time'] = pd.to_datetime(df_rsvps_time['time'])
+    df_rsvps_time['time'] = pd.to_datetime(df_rsvps_time['time'], format='mixed', errors='coerce')
     df_rsvps_time = df_rsvps_time.sort_values(by=['member_id', 'time'], ascending=[True, False])
     
     # Group by member, take top 10, and format as comma-separated string
