@@ -144,23 +144,29 @@ from pathlib import Path
 def generate_user_features(user_nodes, edge_index_1, edge_attr_1, edge_index_2, edge_attr_2, raw_dir="data/raw", out_dir="data", n=10):
     """
     Ingests raw data and PyG tensors to generate a flat, production-ready feature matrix.
+    Aligns raw CSV IDs with namespaced graph nodes (e.g., 'm_2069').
     """
     raw_path = Path(raw_dir)
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     
     print("Initializing feature matrix...")
-    # Base dataframe aligned with user_nodes
+    # Base dataframe aligned with user_nodes (assumed to be namespaced 'm_...')
     df_features = pd.DataFrame({'member_id': user_nodes}).set_index('member_id')
 
     # --- 1. Load & Process Metadata ---
     print("Processing spatial metadata...")
-    df_members = pd.read_csv(raw_path / "meta-members.csv", usecols=['member_id', 'lat', 'lon']).set_index('member_id')
+    df_members = pd.read_csv(raw_path / "meta-members.csv", usecols=['member_id', 'lat', 'lon'])
+    # Namespace and strip .0 artifacts
+    df_members['member_id'] = 'm_' + df_members['member_id'].astype(str).str.replace(r'\.0$', '', regex=True)
+    df_members = df_members.set_index('member_id')
     df_features = df_features.join(df_members, how='left')
 
     # --- 2. Process Group Behavior ---
     print("Processing group membership counts...")
     df_mem_groups = pd.read_csv(raw_path / "member-to-group-edges.csv")
+    # Namespace and strip .0 artifacts
+    df_mem_groups['member_id'] = 'm_' + df_mem_groups['member_id'].astype(str).str.replace(r'\.0$', '', regex=True)
     group_counts = df_mem_groups.groupby('member_id').size().rename('group_count')
     df_features = df_features.join(group_counts, how='left').fillna({'group_count': 0})
 
@@ -169,12 +175,17 @@ def generate_user_features(user_nodes, edge_index_1, edge_attr_1, edge_index_2, 
     df_rsvps = pd.read_csv(raw_path / "rsvps.csv", usecols=['member_id', 'event_id'])
     df_events = pd.read_csv(raw_path / "meta-events.csv", usecols=['event_id', 'time'])
     
-    # Join to get timestamps, sort, and extract the latest 10
+    # Namespace IDs in both frames before joining
+    df_rsvps['member_id'] = 'm_' + df_rsvps['member_id'].astype(str).str.replace(r'\.0$', '', regex=True)
+    df_rsvps['event_id'] = 'e_' + df_rsvps['event_id'].astype(str).str.replace(r'\.0$', '', regex=True)
+    df_events['event_id'] = 'e_' + df_events['event_id'].astype(str).str.replace(r'\.0$', '', regex=True)
+    
+    # Join to get timestamps, sort, and extract the latest n
     df_rsvps_time = df_rsvps.merge(df_events, on='event_id')
     df_rsvps_time['time'] = pd.to_datetime(df_rsvps_time['time'], format='mixed', errors='coerce')
     df_rsvps_time = df_rsvps_time.sort_values(by=['member_id', 'time'], ascending=[True, False])
     
-    # Group by member, take top 10, and format as comma-separated string
+    # Group by member, take top n, and format as comma-separated string
     last_n_events = (
         df_rsvps_time.groupby('member_id')
         .head(n)
@@ -187,9 +198,9 @@ def generate_user_features(user_nodes, edge_index_1, edge_attr_1, edge_index_2, 
     # --- 4. Process Network Features ---
     print("Reconstructing 1-simplex graph for topological metrics...")
     G_backbone = nx.Graph()
-    G_backbone.add_nodes_from(user_nodes) # Ensure disconnected nodes are included
+    G_backbone.add_nodes_from(user_nodes) # user_nodes are already namespaced
     
-    # Map contiguous integer indices back to original member_ids
+    # Map contiguous integer indices back to namespaced IDs
     sources_1 = edge_index_1[0].numpy()
     targets_1 = edge_index_1[1].numpy()
     edges_1 = [(user_nodes[s], user_nodes[t]) for s, t in zip(sources_1, targets_1)]
@@ -201,10 +212,9 @@ def generate_user_features(user_nodes, edge_index_1, edge_attr_1, edge_index_2, 
     df_features['clustering_coeff'] = pd.Series(nx.clustering(G_backbone))
 
     print("Computing 2-simplex participation...")
-    # edge_index_2 contains clique edges. Node frequency correlates to triangle participation.
     if edge_index_2.numel() > 0:
         nodes_in_2_simplices = edge_index_2.flatten().numpy()
-        # Map back to original IDs
+        # Map back to namespaced IDs
         mapped_nodes = [user_nodes[n] for n in nodes_in_2_simplices]
         simplicial_counts = pd.Series(mapped_nodes).value_counts().rename('simplicial_degree')
         df_features = df_features.join(simplicial_counts, how='left').fillna({'simplicial_degree': 0})
@@ -219,30 +229,103 @@ def generate_user_features(user_nodes, edge_index_1, edge_attr_1, edge_index_2, 
     return df_features
 
 
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pathlib import Path
+
+def analyze_feature_distributions(file_path="data/user_features.csv"):
+    if not Path(file_path).exists():
+        print(f"Error: {file_path} not found. Ensure you have run generate_user_features() first.")
+        return
+
+    # Load namespaced features
+    df = pd.read_csv(file_path, index_col='member_id')
+    
+    # 1. Transform event string to sequence length
+    # This helps see if we are actually getting the 10 events per user
+    df['event_seq_len'] = df['last_n_events'].apply(
+        lambda x: len(str(x).split(',')) if pd.notna(x) else 0
+    )
+
+    # 2. Define features for analysis
+    # Network metrics (Degree, PageRank, Simplicial Degree) are often power-law distributed
+    # and require log-scales for meaningful visualization.
+    features = [
+        ('lat', False), 
+        ('lon', False), 
+        ('group_count', True), 
+        ('event_seq_len', False), 
+        ('degree_1_simplex', True), 
+        ('pagerank', True), 
+        ('clustering_coeff', False), 
+        ('simplicial_degree', True)
+    ]
+    
+    # 3. Print Summary Stats (Identifying NaN density)
+    print("--- Numerical Feature Summary ---")
+    print(df[[f[0] for f in features]].describe().T)
+    print("\n--- Missing Values (NaN) Count ---")
+    print(df[[f[0] for f in features]].isna().sum())
+
+    # 4. Generate Visualization Grid
+    sns.set_theme(style="whitegrid")
+    fig, axes = plt.subplots(2, 4, figsize=(24, 12))
+    axes = axes.flatten()
+
+    for i, (col, use_log) in enumerate(features):
+        data = df[col].dropna()
+        
+        if use_log:
+            # We filter for values > 0 for log-scaling
+            sns.histplot(data[data > 0], ax=axes[i], kde=True, color='teal', log_scale=True)
+            axes[i].set_title(f"{col} (Log Scale)")
+        else:
+            sns.histplot(data, ax=axes[i], kde=True, color='coral')
+            axes[i].set_title(f"{col}")
+            
+        axes[i].set_xlabel("Value")
+        axes[i].set_ylabel("Frequency")
+
+    plt.tight_layout()
+    plt.savefig("data/feature_distributions.png")
+    print("\nDiagnostic plot saved to: data/feature_distributions.png")
+
 if __name__ == "__main__":
-    # Load bipartite graph and member nodes
-    G_bipartite, member_nodes = load_bipartite_artifacts(input_dir="data")
-    print(f"Loaded bipartite graph with {G_bipartite.number_of_nodes()} nodes and {G_bipartite.number_of_edges()} edges.")
+    analyze_feature_distributions()
+
+
+
+# %%
+# Load bipartite graph and member nodes
+G_bipartite, member_nodes = load_bipartite_artifacts(input_dir="data")
+print(f"Loaded bipartite graph with {G_bipartite.number_of_nodes()} nodes and {G_bipartite.number_of_edges()} edges.")
+
+# Process the bipartite graph into PyG tensors
+edge_index_1, edge_attr_1, edge_index_2, edge_attr_2 = process_multiplex_graph(
+    G_bipartite, 
+    member_nodes, 
+    alpha=0.05, 
+    max_event_size=50
+)
+print(f"Processed multiplex graph: {edge_index_1.shape[1]} 1-simplices and {edge_index_2.shape[1]//6} 2-simplices.")
+
+# Generate user features and export to CSV
+df_user_features = generate_user_features(
+    member_nodes, 
+    edge_index_1, 
+    edge_attr_1, 
+    edge_index_2, 
+    edge_attr_2, 
+    raw_dir="data/raw", 
+    out_dir="data",
+    n=10
+)
+print("Feature generation complete. Sample of generated features:")
+print(df_user_features.head())
+
+# Analyze feature distributions
+analyze_feature_distributions()
     
-    # Process the bipartite graph into PyG tensors
-    edge_index_1, edge_attr_1, edge_index_2, edge_attr_2 = process_multiplex_graph(
-        G_bipartite, 
-        member_nodes, 
-        alpha=0.05, 
-        max_event_size=50
-    )
-    print(f"Processed multiplex graph: {edge_index_1.shape[1]} 1-simplices and {edge_index_2.shape[1]//6} 2-simplices.")
     
-    # Generate user features and export to CSV
-    df_user_features = generate_user_features(
-        member_nodes, 
-        edge_index_1, 
-        edge_attr_1, 
-        edge_index_2, 
-        edge_attr_2, 
-        raw_dir="data/raw", 
-        out_dir="data",
-        n=10
-    )
-    print("Feature generation complete. Sample output:")
-    print(df_user_features.head())
