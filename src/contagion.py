@@ -30,70 +30,6 @@ class NodeSusceptibilityModel:
         
         return beta, beta_delta
 
-
-class RSCGenerator:
-    def __init__(self, k_avg, k_delta_avg, N=2000):
-        self.N = N
-        self.k_avg = k_avg
-        self.k_delta_avg = k_delta_avg
-
-        self.p_1 = (k_avg - 2*k_delta_avg) / (N - 1 - 2*k_delta_avg) 
-        self.p_delta = (2*k_delta_avg) / ((N - 1)*(N - 2))
-
-        self.links = [[] for _ in range(N)] # [[3,1,0],[],[0,6,92],...]
-        self.triangles = [[] for _ in range(N)] # [[(3,1),)(7,32)],[],[(6,92)],...]
-
-    def generate(self, seed=None):
-        """Generates the topology using an optimized sampling approach"""
-        if seed is not None:
-            random.seed(seed)
-            np.random.seed(seed)
-
-        self._generate_1_simplices()
-        self._generate_2_simplices()
-        return self.links, self.triangles
-        
-    def _generate_1_simplices(self):
-        """edge sampling from binomial"""
-        print(f"Sampling edges with p_1 = {self.p_1:.8f}")
-        num_edges = np.random.binomial(math.comb(self.N, 2), self.p_1)
-        added_edges = set()
-        
-        # Rejection sampling
-        node_list = range(self.N)
-        while len(added_edges) < num_edges:
-            i, j = random.sample(node_list, 2)
-            edge = (i, j) if i < j else (j, i)
-            
-            if edge not in added_edges:
-                added_edges.add(edge)
-                self.links[i].append(j)
-                self.links[j].append(i)
-            
-            print(f"\rEdges sampled: {len(added_edges)}/{num_edges}", end="")
-        print()
-
-    def _generate_2_simplices(self):
-        """triangle hyperedge sampling from binomial"""
-        print(f"Sampling triangles with p_delta = {self.p_delta:.8f}")
-        num_triangles = np.random.binomial(math.comb(self.N, 3), self.p_delta)
-        added_triangles = set()
-        
-        # Rejection sampling
-        node_list = range(self.N)
-        while len(added_triangles) < num_triangles:
-            nodes = tuple(sorted(random.sample(node_list, 3)))
-            if nodes not in added_triangles:
-                added_triangles.add(nodes)
-                i, j, k = nodes
-                self.triangles[i].append((j, k))
-                self.triangles[j].append((i, k))
-                self.triangles[k].append((i, j))
-            
-            print(f"\rTriangles sampled: {len(added_triangles)}/{num_triangles}", end="")
-        print()
-
-
 class RandomSeeding:
     def __init__(self, N, rho_0):
         self.N = N
@@ -104,7 +40,6 @@ class RandomSeeding:
         initial_infected = random.sample(range(self.N), num_initial_infected)
         return initial_infected
 
-
 import numpy as np
 import random
 import math
@@ -114,17 +49,12 @@ class MultiplexTopologyAdapter:
     def __init__(self, edge_index_1, edge_index_2, user_nodes):
         """
         Parses PyTorch Geometric tensors into the adjacency lists required by the simulator.
-        
-        Args:
-            edge_index_1: Tensor of shape (2, E1) for pairwise edges.
-            edge_index_2: Tensor of shape (2, E2) for flattened 2-simplices.
-            user_nodes: List of original user IDs. Index in list == simulator node_id.
         """
         self.user_nodes = user_nodes
         self.N = len(user_nodes)
         
         self.links = [[] for _ in range(self.N)]
-        self.triangles = [[] for _ in range(self.N)]
+        self.triangles = [] # Flattened for VectorizedSCMSimulator compatibility
 
         self._build_links(edge_index_1)
         self._build_triangles(edge_index_2)
@@ -142,24 +72,35 @@ class MultiplexTopologyAdapter:
             return
             
         src, dst = edge_index_2.numpy()
-        edge_set = set(zip(src, dst))
         
-        # Build an intermediate adjacency list for the 2-simplex edges
-        adj_2 = [[] for _ in range(self.N)]
+        # 1. Build fast lookup sets
+        adj_sets = [set() for _ in range(self.N)]
         for u, v in zip(src, dst):
-            adj_2[u].append(v)
+            adj_sets[u].add(v)
             
-        # Reconstruct true (j, k) triangles for node i
+        flat_triangles = []
+        
+        # 2. Use set intersection to find cliques (O(E * min(d_u, d_v)))
         for i in range(self.N):
-            neighbors = adj_2[i]
-            # Check all unique pairs of neighbors
-            for idx_j in range(len(neighbors)):
-                for idx_k in range(idx_j + 1, len(neighbors)):
-                    j = neighbors[idx_j]
-                    k = neighbors[idx_k]
-                    # If the neighbors are connected in the 2-simplex graph, it forms a triangle
-                    if (j, k) in edge_set:
-                        self.triangles[i].append((j, k))
+            neighbors = adj_sets[i]
+            for j in neighbors:
+                if j <= i: # Symmetry breaking: only evaluate each edge once
+                    continue
+                    
+                # The intersection of neighbors yields the 3rd node in the triangle
+                common_neighbors = neighbors.intersection(adj_sets[j])
+                
+                for k in common_neighbors:
+                    if k <= j: # Symmetry breaking: ensure i < j < k
+                        continue
+                        
+                    # Found a unique triangle (i, j, k). 
+                    # The vectorized simulator needs a target exposure mapping for all 3 nodes.
+                    flat_triangles.append((i, j, k))
+                    flat_triangles.append((j, i, k))
+                    flat_triangles.append((k, i, j))
+                    
+        self.triangles = flat_triangles
 
     def get_original_id(self, node_id):
         return self.user_nodes[node_id]
@@ -274,26 +215,3 @@ def calibrate_parameters(simulator_factory, historical_cascade_sizes, param_grid
             print(f"New Best! b1:{b1:.4f}, b2:{b2:.4f} | Dist: {dist:.4f}")
             
     return best_params
-
-
-# %%
-# Example Usage
-
-# Initialize the RSCGenerator
-rsc_generator = RSCGenerator(k_avg=20, k_delta_avg=6, N=2000)
-# Generate the topology
-links, triangles = rsc_generator.generate(seed=42)
-
-# Initialize the SCMSimulator
-initial_infected = RandomSeeding(N=2000, rho_0=0.05).seed()
-simulator = SCMSimulator(links, triangles, initial_infected, beta=0.03, beta_delta=0.1, mu=0.01)
-
-# Run the simulation and get density (rho) history (density/rho = fraction of infected nodes)
-rho_history = simulator.run(t_max=200)
-
-# Plot the results
-import matplotlib.pyplot as plt
-plt.plot(range(len(rho_history)), rho_history)
-plt.xlabel('Time')
-plt.ylabel('Rho')
-plt.show()

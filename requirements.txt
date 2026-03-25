@@ -4,3 +4,4 @@ matplotlib
 seaborn
 openpyxl
 networkx
+torch_geometric
