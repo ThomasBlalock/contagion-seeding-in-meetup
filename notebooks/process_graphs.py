@@ -351,6 +351,45 @@ df_user_features = generate_user_features(
 print("Feature generation complete. Sample of generated features:")
 print(df_user_features.head())
 
+# Event features (Stub)
+# generate_mock_event_vectors.py
+import pickle
+import numpy as np
+import pandas as pd
+from pathlib import Path
+import sys
+
+def generate_event_vectors(input_pkl="data/event_idx.pkl", output_csv="data/event_features.csv", vector_dim=64):
+    in_path = Path(input_pkl)
+    out_path = Path(output_csv)
+    
+    if not in_path.exists():
+        print(f"Error: {in_path} does not exist.")
+        sys.exit(1)
+
+    # Load the deterministic list of event IDs
+    with open(in_path, "rb") as f:
+        event_idx = pickle.load(f)
+        
+    num_events = len(event_idx)
+    print(f"Loaded {num_events} event IDs.")
+
+    # Generate a dense matrix of random vectors (standard normal distribution)
+    print(f"Generating {vector_dim}-dimensional vectors...")
+    vectors = np.random.randn(num_events, vector_dim).astype(np.float32)
+
+    # Construct the dataframe
+    columns = [f"dim_{i}" for i in range(vector_dim)]
+    df = pd.DataFrame(vectors, index=event_idx, columns=columns)
+    df.index.name = "event_id"
+
+    # Export to CSV
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_path)
+    print(f"Successfully exported vector matrix to {out_path}.")
+
+generate_event_vectors()
+
 # Analyze feature distributions
 analyze_feature_distributions()
     
