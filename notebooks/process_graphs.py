@@ -23,6 +23,12 @@ def load_bipartite_artifacts(input_dir="data"):
     return G_bipartite, member_nodes
 
 
+import torch
+import numpy as np
+import networkx as nx
+import itertools
+from collections import defaultdict
+
 def process_multiplex_graph(bipartite_graph, user_nodes, alpha=0.05, max_event_size=50):
     """
     Ingests a NetworkX bipartite graph and outputs PyG-ready 1-simplex and 
@@ -35,12 +41,15 @@ def process_multiplex_graph(bipartite_graph, user_nodes, alpha=0.05, max_event_s
         max_event_size: Hard cutoff for 2-simplex combinatorics.
         
     Returns:
-        edge_index_1, edge_attr_1, edge_index_2, edge_attr_2
+        edge_index_1_torch, edge_attr_1_torch, edge_index_2_torch, edge_attr_2_torch, idx_to_user
     """
     
     # --- STEP 1: Node Index Alignment ---
     print("Mapping user nodes to contiguous indices...")
     user_to_idx = {u: i for i, u in enumerate(user_nodes)}
+    
+    # ADDED: Reverse mapping list (O(1) indexing, lower memory footprint)
+    idx_to_user = list(user_nodes)
     
     event_nodes = [n for n, attr in bipartite_graph.nodes(data=True) if attr.get('type') == 'event']
     event_to_users_dict = {}
@@ -86,15 +95,15 @@ def process_multiplex_graph(bipartite_graph, user_nodes, alpha=0.05, max_event_s
     
     print(f"Backbone Filter: Reduced 1-simplices from {len(weights)//2} to {len(filtered_weights)//2}")
 
-    edge_index_1 = torch.tensor(np.vstack((filtered_rows, filtered_cols)), dtype=torch.long)
-    edge_attr_1 = torch.tensor(filtered_weights, dtype=torch.float).view(-1, 1)
+    edge_index_1_torch = torch.tensor(np.vstack((filtered_rows, filtered_cols)), dtype=torch.long)
+    edge_attr_1_torch = torch.tensor(filtered_weights, dtype=torch.float).view(-1, 1)
 
     # --- STEP 3: Backbone-Conditioned Simplicial Closure (2-Simplices) ---
     print("Building lookup set for significant 1-simplices...")
     # Fast O(1) lookup for triplet validation
     significant_1_simplices = {
         tuple(sorted((u.item(), v.item()))) 
-        for u, v in zip(edge_index_1[0], edge_index_1[1])
+        for u, v in zip(edge_index_1_torch[0], edge_index_1_torch[1])
     }
     
     edges_2_dict = defaultdict(int)
@@ -127,13 +136,13 @@ def process_multiplex_graph(bipartite_graph, user_nodes, alpha=0.05, max_event_s
         edge_attr_2.extend([[weight]] * 6)
         
     if not edge_index_2:
-        edge_index_2 = torch.empty((2, 0), dtype=torch.long)
-        edge_attr_2 = torch.empty((0, 1), dtype=torch.float)
+        edge_index_2_torch = torch.empty((2, 0), dtype=torch.long)
+        edge_attr_2_torch = torch.empty((0, 1), dtype=torch.float)
     else:
-        edge_index_2 = torch.tensor(edge_index_2, dtype=torch.long).t().contiguous()
-        edge_attr_2 = torch.tensor(edge_attr_2, dtype=torch.float)
+        edge_index_2_torch = torch.tensor(edge_index_2, dtype=torch.long).t().contiguous()
+        edge_attr_2_torch = torch.tensor(edge_attr_2, dtype=torch.float)
         
-    return edge_index_1, edge_attr_1, edge_index_2, edge_attr_2
+    return edge_index_1_torch, edge_attr_1_torch, edge_index_2_torch, edge_attr_2_torch, idx_to_user
 
 
 import pandas as pd
@@ -300,13 +309,23 @@ G_bipartite, member_nodes = load_bipartite_artifacts(input_dir="data")
 print(f"Loaded bipartite graph with {G_bipartite.number_of_nodes()} nodes and {G_bipartite.number_of_edges()} edges.")
 
 # Process the bipartite graph into PyG tensors
-edge_index_1, edge_attr_1, edge_index_2, edge_attr_2 = process_multiplex_graph(
-    G_bipartite, 
-    member_nodes, 
-    alpha=0.05, 
+edge_index_1, edge_attr_1, edge_index_2, edge_attr_2, user_idx = process_multiplex_graph(
+    G_bipartite,
+    member_nodes,
+    alpha=0.2,
     max_event_size=50
 )
 print(f"Processed multiplex graph: {edge_index_1.shape[1]} 1-simplices and {edge_index_2.shape[1]//6} 2-simplices.")
+
+# Print to file
+torch.save(edge_index_1, "data/edge_index_simple.pt")
+torch.save(edge_attr_1, "data/edge_attr_simple.pt")
+torch.save(edge_index_2, "data/edge_index_hyper.pt")
+torch.save(edge_attr_2, "data/edge_attr_hyper.pt")
+
+import pickle
+with open("data/user_idx.pkl", "wb") as f:
+    pickle.dump(user_idx, f)
 
 # Generate user features and export to CSV
 df_user_features = generate_user_features(
