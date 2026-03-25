@@ -1,0 +1,63 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            x1jcz86vcog923g62nzytve2dw79wod6:
+                codePath: /home/blalo/uva-work/contagion-seeding-in-meetup/notebooks/models/template.ipynb
+                codePathLocal: models/template.ipynb
+                cpu_count: 8
+                cpu_count_logical: 16
+                cudaVersion: "13.2"
+                disk:
+                    /:
+                        total: "1081101176832"
+                        used: "117496041472"
+                email: blalockthomasm@gmail.com
+                executable: /home/blalo/miniconda3/envs/dl/bin/python
+                git:
+                    commit: 46bc9438e0d20f078e21af58f6f91a939a9a3194
+                    remote: git@github.com:ThomasBlalock/contagion-seeding-in-meetup.git
+                gpu: NVIDIA GeForce RTX 3050
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      memoryTotal: "6442450944"
+                      name: NVIDIA GeForce RTX 3050
+                      uuid: GPU-309ec1e5-4acd-b743-65df-0099f42ec100
+                host: Banana
+                memory:
+                    total: "16729165824"
+                os: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+                program: /home/blalo/uva-work/contagion-seeding-in-meetup/notebooks/models/template.ipynb
+                python: CPython 3.12.12
+                root: /home/blalo/uva-work/contagion-seeding-in-meetup/notebooks
+                startedAt: "2026-03-25T13:58:05.698655Z"
+                writerId: x1jcz86vcog923g62nzytve2dw79wod6
+        m: []
+        python_version: 3.12.12
+        t:
+            "1":
+                - 1
+                - 77
+            "2":
+                - 1
+                - 77
+            "3":
+                - 1
+                - 2
+                - 13
+                - 16
+            "4": 3.12.12
+            "5": 0.25.0
+            "8":
+                - 1
+            "12": 0.25.0
+            "13": linux-x86_64
+epochs:
+    value: 10
+lr:
+    value: 0.001
+project_name:
+    value: meetup-contagion-seeding
+run_name:
+    value: mcmc-vectorized-run
