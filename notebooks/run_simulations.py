@@ -41,8 +41,8 @@ data = data_gen.generate(
     num_iter=1, 
     max_seeds_per_iter=2, # EXPONENTIAL FACTOR: KEEP LOW
     expand_best_n=2, 
-    expand_random_n=2)
-print(data)
+    expand_random_n=2
+    )
 
 import pickle
 
@@ -52,4 +52,4 @@ with open("data/imitation_data.pkl", "wb") as f:
 with open("data/event_idx.pkl", "rb") as f:
     event_idx = pickle.load(f)
         
-print("Complete. Check dataloader_output_test.txt")
+print("Complete.")
