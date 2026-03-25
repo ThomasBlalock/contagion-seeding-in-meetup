@@ -1,0 +1,39 @@
+{
+  "os":  "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python":  "CPython 3.12.12",
+  "startedAt":  "2026-03-25T20:37:45.107191Z",
+  "program":  "/home/blalo/uva-work/test/contagion-seeding-in-meetup/notebooks/models/template.ipynb",
+  "codePath":  "/home/blalo/uva-work/test/contagion-seeding-in-meetup/notebooks/models/template.ipynb",
+  "codePathLocal":  "models/template.ipynb",
+  "git":  {
+    "remote":  "git@github.com:ThomasBlalock/contagion-seeding-in-meetup.git",
+    "commit":  "e9f3fa260f0dfc26104396c57266a229d9cb83a8"
+  },
+  "email":  "blalockthomasm@gmail.com",
+  "root":  "/home/blalo/uva-work/test/contagion-seeding-in-meetup/notebooks",
+  "host":  "Banana",
+  "executable":  "/home/blalo/miniconda3/envs/dl/bin/python",
+  "cpu_count":  8,
+  "cpu_count_logical":  16,
+  "gpu":  "NVIDIA GeForce RTX 3050",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "1081101176832",
+      "used":  "117487312896"
+    }
+  },
+  "memory":  {
+    "total":  "16729186304"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 3050",
+      "memoryTotal":  "6442450944",
+      "architecture":  "Ampere",
+      "uuid":  "GPU-309ec1e5-4acd-b743-65df-0099f42ec100"
+    }
+  ],
+  "cudaVersion":  "13.2",
+  "writerId":  "r6jx0ixklo05nrca9lh1knvaqyc4mabf"
+}

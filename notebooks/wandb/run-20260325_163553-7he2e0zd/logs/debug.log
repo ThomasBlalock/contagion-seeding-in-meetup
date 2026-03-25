@@ -1,0 +1,27 @@
+2026-03-25 16:35:53,914 INFO    MainThread:17558 [wandb_init.py:setup_run_log_directory():717] Logging user logs to /home/blalo/uva-work/test/contagion-seeding-in-meetup/notebooks/wandb/run-20260325_163553-7he2e0zd/logs/debug.log
+2026-03-25 16:35:53,914 INFO    MainThread:17558 [wandb_init.py:setup_run_log_directory():718] Logging internal logs to /home/blalo/uva-work/test/contagion-seeding-in-meetup/notebooks/wandb/run-20260325_163553-7he2e0zd/logs/debug-internal.log
+2026-03-25 16:35:53,914 INFO    MainThread:17558 [wandb_init.py:monkeypatch_ipython():636] configuring jupyter hooks <wandb.sdk.wandb_init._WandbInit object at 0x7c90d46d1f70>
+2026-03-25 16:35:53,914 INFO    MainThread:17558 [wandb_init.py:init():844] calling init triggers
+2026-03-25 16:35:53,915 INFO    MainThread:17558 [wandb_init.py:init():849] wandb.init called with sweep_config: {}
+config: {'lr': 0.001, 'epochs': 10, 'project_name': 'meetup-contagion-seeding', 'run_name': 'mcmc-vectorized-run', '_wandb': {}}
+2026-03-25 16:35:53,915 INFO    MainThread:17558 [wandb_init.py:init():892] starting backend
+2026-03-25 16:35:53,915 INFO    MainThread:17558 [wandb_init.py:init():895] sending inform_init request
+2026-03-25 16:35:53,916 INFO    MainThread:17558 [wandb_init.py:init():903] backend started and connected
+2026-03-25 16:35:53,919 INFO    MainThread:17558 [wandb_run.py:_label_probe_notebook():1333] probe notebook
+2026-03-25 16:35:53,919 INFO    MainThread:17558 [wandb_init.py:init():973] updated telemetry
+2026-03-25 16:35:53,925 INFO    MainThread:17558 [wandb_init.py:init():997] communicating run to backend with 90.0 second timeout
+2026-03-25 16:35:54,716 INFO    MainThread:17558 [wandb_init.py:init():1042] starting run threads in backend
+2026-03-25 16:35:54,798 INFO    MainThread:17558 [wandb_run.py:_console_start():2524] atexit reg
+2026-03-25 16:35:54,798 INFO    MainThread:17558 [wandb_run.py:_redirect():2373] redirect: wrap_raw
+2026-03-25 16:35:54,798 INFO    MainThread:17558 [wandb_run.py:_redirect():2442] Wrapping output streams.
+2026-03-25 16:35:54,798 INFO    MainThread:17558 [wandb_run.py:_redirect():2465] Redirects installed.
+2026-03-25 16:35:54,799 INFO    MainThread:17558 [wandb_init.py:init():1082] run started, returning control to user process
+2026-03-25 16:35:54,800 INFO    MainThread:17558 [wandb_watch.py:_watch():69] Watching
+2026-03-25 16:35:58,599 INFO    MainThread:17558 [wandb_run.py:_finish():2291] finishing run blalockthomasm-university-of-virginia/meetup-contagion-seeding/7he2e0zd
+2026-03-25 16:35:58,599 INFO    MainThread:17558 [jupyter.py:save_history():435] not saving jupyter history
+2026-03-25 16:35:58,599 INFO    MainThread:17558 [jupyter.py:save_ipynb():362] not saving jupyter notebook
+2026-03-25 16:35:58,599 INFO    MainThread:17558 [wandb_init.py:_jupyter_teardown():621] cleaning up jupyter logic
+2026-03-25 16:35:58,599 INFO    MainThread:17558 [wandb_run.py:_atexit_cleanup():2490] got exitcode: 0
+2026-03-25 16:35:58,600 INFO    MainThread:17558 [wandb_run.py:_restore():2472] restore
+2026-03-25 16:35:58,600 INFO    MainThread:17558 [wandb_run.py:_restore():2478] restore done
+2026-03-25 16:35:59,669 INFO    MainThread:17558 [wandb_run.py:_footer_sync_info():3868] logging synced files

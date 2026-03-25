@@ -51,31 +51,5 @@ with open("data/imitation_data.pkl", "wb") as f:
 
 with open("data/event_idx.pkl", "rb") as f:
     event_idx = pickle.load(f)
-
-from preprocess import build_production_dataloader
-
-print("Building dataloader...")
-dataloader, static_graph = build_production_dataloader(
-    imitation_dataset=data, 
-    user_idx=user_idx, 
-    event_idx=event_idx,
-    data_dir="data",
-    batch_size=32,
-    shuffle=True
-)
-
-print("Writing dataloader batch shapes to file...")
-with open("dataloader_output_test.txt", "w") as f:
-    f.write("Static Graph Topology & Features:\n")
-    for k, v in static_graph.items():
-        f.write(f"{k}: {v.shape}\n")
-        
-    f.write("\nFirst Batch Shapes:\n")
-    for batch_idx, (seed_mask, y, eval_mask, event_feat) in enumerate(dataloader):
-        f.write(f"Seed Mask: {seed_mask.shape}\n")
-        f.write(f"Targets (y): {y.shape}\n")
-        f.write(f"Eval Mask: {eval_mask.shape}\n")
-        f.write(f"Event Features: {event_feat.shape}\n")
-        break 
         
 print("Complete. Check dataloader_output_test.txt")
