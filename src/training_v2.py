@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-#import wandb
+# import wandb
 import matplotlib.pyplot as plt
 
 class ImitationTrainer:
@@ -114,32 +114,27 @@ import pickle
 import torch
 from sklearn.model_selection import train_test_split
 from preprocess import build_production_dataloader
+from process_graphs import load_bipartite_artifacts
+bipartite_graph, user_nodes = load_bipartite_artifacts('')
+from process_graphs import process_multiplex_graph
+edge_index_1_torch, edge_attr_1_torch, edge_index_2_torch, edge_attr_2_torch, idx_to_user, idx_to_event = process_multiplex_graph(bipartite_graph, user_nodes, alpha=0.05, max_event_size=50)
 
 def load_and_prepare_training_data(data_dir="data", batch_size=32, val_split=0.2, random_seed=42):
-    """
-    Loads the precomputed MCMC imitation data, splits it, and initializes the dataloader pipelines.
-    """
-    print("Loading imitation data from disk...")
-    with open(f"{data_dir}/imitation_data.pkl", "rb") as f:
-        imitation_dataset = pickle.load(f)
-
-    print("Loading index mappings...")
-    with open(f"{data_dir}/user_idx.pkl", "rb") as f:
-        user_idx = pickle.load(f)
-        
-    with open(f"{data_dir}/event_idx.pkl", "rb") as f:
-        event_idx = pickle.load(f)
+ 
+    dataset = torch.cat([edge_index_1_torch, edge_attr_1_torch], dim=0)
+    user_idx = idx_to_user
+    event_idx = idx_to_event
 
     print(f"Splitting data with {val_split*100}% validation ratio...")
     train_data, val_data = train_test_split(
-        imitation_dataset, 
+        dataset, 
         test_size=val_split, 
         random_state=random_seed
     )
 
     print("Building PyTorch Train DataLoader...")
     train_dataloader, static_graph = build_production_dataloader(
-        imitation_dataset=train_data,
+        dataset=train_data,
         user_idx=user_idx,
         event_idx=event_idx,
         data_dir=data_dir,
