@@ -12,7 +12,7 @@ with open("data/user_idx.pkl", "rb") as f:
 
 import sys
 import os
-sys.path.append('/home/blalo/uva-work/contagion-seeding-in-meetup/src')
+sys.path.append(os.path.join(os.getcwd(), '..', 'src'))
 from contagion import MultiplexTopologyAdapter
 from preprocess import ImitationDataGenerator
 
