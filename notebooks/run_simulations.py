@@ -19,8 +19,27 @@ from contagion import MultiplexTopologyAdapter
 from preprocess import ImitationDataGenerator
 from seeder import SimplicialSeeder
 
-seeder = SimplicialSeeder()
+class ContagionProbabilityLookup:
+    """
+    O(1) memory-backed lookup table for user-event contagion probabilities.
+    """
+    def __init__(self, probability_matrix, user_mapping, event_mapping):
+        self.prob_matrix = probability_matrix
+        self.user_to_idx = user_mapping
+        self.event_to_idx = event_mapping
 
+    def __call__(self, user_id, event_id) -> float:
+        """
+        Accepts the original user ID and event ID strings/ints and 
+        returns the calibrated transmission probability.
+        """
+        if user_id not in self.user_to_idx or event_id not in self.event_to_idx:
+            # Return baseline probability or 0.0 if the node isn't found
+            return 0.0 
+        
+        u_idx = self.user_to_idx[user_id]
+        e_idx = self.event_to_idx[event_id]
+        return self.prob_matrix[u_idx, e_idx].item()
 with open("data/probability_lookup.pkl", "rb") as f:
     prob_lookup = pickle.load(f)
 def sus_func():
@@ -37,6 +56,7 @@ def combine_imitation_data(existing_data, new_data):
 print("Edge index for simple graph:", edge_simple.shape)
 print("Edge index for hyper graph:", edge_hyper.shape)
 adpt = MultiplexTopologyAdapter(edge_simple, edge_hyper, user_idx)
+seeder = SimplicialSeeder(adpt.N, adpt.links, adpt.triangles)
 print("Links and triangles parsed:")
 print(f"Node 0 links: {adpt.links[0]}")
 print(f"Node 0 triangles: {adpt.triangles[0]}")
