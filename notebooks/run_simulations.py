@@ -17,7 +17,8 @@ config = {
         "num_iter": 3, 
         "max_seeds_per_iter": 2, # EXPONENTIAL FACTOR: KEEP LOW
         "expand_best_n": 3, 
-        "expand_random_n": 3
+        "expand_random_n": 3,
+        "sampling_randomness": 0.5 # Balance between testing promising candidates and exploring diverse (random) options
     }
 }
 
@@ -80,7 +81,7 @@ print("Edge index for hyper graph:", edge_hyper.shape)
 adpt = MultiplexTopologyAdapter(edge_simple, edge_hyper, user_idx)
 config["init_params"]["num_nodes"] = adpt.N # Update num_nodes based on adapter
 config["init_params"]["triangles_list"] = adpt.triangles # Update triangles list based on adapter
-seeder = SimplicialSeeder(adpt.N, adpt.links, adpt.triangles)
+seeder = SimplicialSeeder(adpt.N, adpt.links, adpt.triangles, top_n=config["init_params"]["top_n"])
 config["init_params"]["seeding_func"] = seeder
 print("Links and triangles parsed:")
 print(f"Node 0 links: {adpt.links[0]}")

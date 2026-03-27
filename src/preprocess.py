@@ -119,7 +119,7 @@ class ImitationDataGenerator:
             device=device
         )
 
-    def generate(self, event_id, num_iter=100, max_seeds_per_iter=5, expand_best_n=3, expand_random_n=3):
+    def generate(self, event_id, num_iter=100, max_seeds_per_iter=5, expand_best_n=3, expand_random_n=3, sampling_randomness=0.5):
         """
         Executes the main MCMC rollout loop with bounded tree expansion.
         """
@@ -142,9 +142,9 @@ class ImitationDataGenerator:
                     continue
                     
                 candidates_with_scores = self.seeding_func(current_seeds)
-                top_candidates = [c[0] for c in candidates_with_scores[:int(self.top_n * 0.5)]]
-                top_candidates += random.sample([c[0] for c in candidates_with_scores[int(self.top_n * 0.5):]],
-                                               k=int(self.top_n * 0.5))
+                top_candidates = [c[0] for c in candidates_with_scores[:int(self.top_n * sampling_randomness)]]
+                top_candidates += random.sample([c[0] for c in candidates_with_scores[int(self.top_n * sampling_randomness):]],
+                                               k=int(self.top_n * (1-sampling_randomness)))
 
                 candidate_metrics = []
                 for candidate in top_candidates:
