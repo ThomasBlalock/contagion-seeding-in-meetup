@@ -29,36 +29,25 @@ import networkx as nx
 import itertools
 from collections import defaultdict
 
+import itertools
+from collections import defaultdict
+import numpy as np
+import torch
+import networkx as nx
+
 def process_multiplex_graph(bipartite_graph, user_nodes, alpha=0.05, max_event_size=50):
     """
     Ingests a NetworkX bipartite graph and outputs PyG-ready 1-simplex and 
     2-simplex tensors, utilizing a multiscale backbone for noise reduction.
-    
-    Args:
-        bipartite_graph: nx.Graph containing both user and event nodes.
-        user_nodes: List of user node IDs (must match Bipartite Graph exactly).
-        alpha: Statistical significance threshold for the Disparity Filter.
-        max_event_size: Hard cutoff for 2-simplex combinatorics.
-        
-    Returns:
-        edge_index_1_torch, edge_attr_1_torch, edge_index_2_torch, edge_attr_2_torch, idx_to_user
+    Removes isolated nodes and remaps indices to be contiguous.
     """
     
     # --- STEP 1: Node Index Alignment ---
     print("Mapping user nodes to contiguous indices...")
     user_to_idx = {u: i for i, u in enumerate(user_nodes)}
-    
-    # ADDED: Reverse mapping list (O(1) indexing, lower memory footprint)
     idx_to_user = list(user_nodes)
 
-    event_nodes = [n for n, attr in bipartite_graph.nodes(data=True) if attr.get('type') == 'event']
-    event_to_users_dict = {}
-
-    print("Mapping user nodes to contiguous indices...")
-    user_to_idx = {u: i for i, u in enumerate(user_nodes)}
-    idx_to_user = list(user_nodes)
-    
-    # MODIFIED: Extract, filter, and sort deterministically to prevent indexing drift
+    # Extract, filter, and sort deterministically to prevent indexing drift
     idx_to_event = sorted([n for n, attr in bipartite_graph.nodes(data=True) if attr.get('type') == 'event'])
     
     event_to_users_dict = {}
@@ -149,7 +138,35 @@ def process_multiplex_graph(bipartite_graph, user_nodes, alpha=0.05, max_event_s
     else:
         edge_index_2_torch = torch.tensor(edge_index_2, dtype=torch.long).t().contiguous()
         edge_attr_2_torch = torch.tensor(edge_attr_2, dtype=torch.float)
+
+    # --- STEP 5: Prune Isolated Nodes and Remap Indices ---
+    print("Pruning isolated nodes and remapping to contiguous indices...")
+    # Concatenate to find all nodes that survived filtering
+    if edge_index_2_torch.numel() > 0:
+        all_edges = torch.cat([edge_index_1_torch, edge_index_2_torch], dim=1)
+    else:
+        all_edges = edge_index_1_torch
         
+    if all_edges.numel() > 0:
+        active_nodes = torch.unique(all_edges)
+        
+        # O(1) array mapping: index is old_id, value is new_id
+        mapping = torch.full((len(user_nodes),), -1, dtype=torch.long)
+        mapping[active_nodes] = torch.arange(len(active_nodes), dtype=torch.long)
+        
+        # Apply mapping
+        edge_index_1_torch = mapping[edge_index_1_torch]
+        if edge_index_2_torch.numel() > 0:
+            edge_index_2_torch = mapping[edge_index_2_torch]
+            
+        # Filter idx_to_user to match the new contiguous indices
+        idx_to_user = [idx_to_user[i.item()] for i in active_nodes]
+    else:
+        # Edge case: entirely empty graph post-filtering
+        edge_index_1_torch = torch.empty((2, 0), dtype=torch.long)
+        edge_index_2_torch = torch.empty((2, 0), dtype=torch.long)
+        idx_to_user = []
+
     return edge_index_1_torch, edge_attr_1_torch, edge_index_2_torch, edge_attr_2_torch, idx_to_user, idx_to_event
 
 
