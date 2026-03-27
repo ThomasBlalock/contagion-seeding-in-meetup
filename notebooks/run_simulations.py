@@ -3,27 +3,33 @@ import numpy as np
 import torch
 import networkx as nx
 import pickle
+import sys
+import os
+sys.path.append(os.path.join(os.getcwd(), '..', 'src'))
+from contagion import MultiplexTopologyAdapter
+from preprocess import ImitationDataGenerator
+from seeder import SimplicialSeeder
 
 # Configuration all in one place for easy adjustments
 config = {
+    "lam": 0.6, # base infection probability scaling factor for simple edges
+    "lam_d": 1, # base infection probability scaling factor for hyperedges (triangles)
+    "sample_num_events": 1, # Number of distinct events to generate data for (randomly sampled from the dataset)
     "init_params": {
-        "num_mc_trials": 20,
-        "top_n": 30,
-        "infected_target": 10,
-        "max_sim_steps": 50,
+        "num_mc_trials": 20, # Number of simulations per candidate seed to calculate avg timesteps
+        "top_n": 30, # Number of seed nodes to consider at each iteration (from seeding function)
+        "infected_target": 10, # Target number of infected nodes to reach in the simulation
+        "max_sim_steps": 50, # Maximum steps to run the contagion simulation before considering it a failure (timeout)
         "device": 'cuda' if torch.cuda.is_available() else 'cpu'
     },
     "generate_params": {
-        "num_iter": 3, 
+        "num_iter": 3, # Number of simulation iterations to perform for each event
         "max_seeds_per_iter": 2, # EXPONENTIAL FACTOR: KEEP LOW
-        "expand_best_n": 3, 
-        "expand_random_n": 3,
+        "expand_best_n": 3, # Number of best performing seed nodes to expand in the next iteration
+        "expand_random_n": 3, # Number of randomly selected seed nodes to expand in the next iteration (for exploration)
         "sampling_randomness": 0.5 # Balance between testing promising candidates and exploring diverse (random) options
     }
 }
-
-data_gen = ImitationDataGenerator(**config["init_params"])
-data = data_gen.generate(**config["generate_params"])
 
 edge_simple = torch.load("data/edge_index_simple.pt")
 edge_hyper = torch.load("data/edge_index_hyper.pt")
@@ -34,13 +40,6 @@ with open("data/user_idx.pkl", "rb") as f:
     user_idx = pickle.load(f)
 with open("data/event_idx.pkl", "rb") as f:
     idx_to_event = pickle.load(f)
-
-import sys
-import os
-sys.path.append(os.path.join(os.getcwd(), '..', 'src'))
-from contagion import MultiplexTopologyAdapter
-from preprocess import ImitationDataGenerator
-from seeder import SimplicialSeeder
 
 class ContagionProbabilityLookup:
     """
@@ -87,11 +86,13 @@ print("Links and triangles parsed:")
 print(f"Node 0 links: {adpt.links[0]}")
 print(f"Node 0 triangles: {adpt.triangles[0]}")
 print("Total nodes:", adpt.N)
-event_ids = [1, 4, 5]
+event_ids = np.random.choice(
+    idx_to_event, 
+    size=min(config["sample_num_events"], len(idx_to_event)), replace=False)
 combined_data = None
 for event_id in event_ids:
-    lam = 0.3
-    lam_d = 0.95
+    lam = config["lam"]
+    lam_d = config["lam_d"]
     def sus_func(node_id):
         original_user_id = user_idx[node_id]
         original_event_id = idx_to_event[event_id]
