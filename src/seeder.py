@@ -8,24 +8,29 @@ class SimplicialSeeder:
     Seeding strategies for Simplicial Contagion Models.
     Designed to be stateless with respect to tree expansion to support BFS/MCMC rollouts safely.
     """
-    def __init__(self, data_dir: str = None):
-        if data_dir is None:
-            data_dir = Path.cwd().parent / "notebooks" / "data"
+    def __init__(self, num_nodes: int, links: List[List[int]], flat_triangles: List[Tuple[int, int, int]]):
+        self.N = num_nodes
+        self.links = links
+        
+        # 1. Reconstruct the nested adjacency list expected by the CELF proxy
+        self.triangles = [[] for _ in range(self.N)]
+        for i, j, k in flat_triangles:
+            self.triangles[i].append((j, k))
+
+        # 2. Convert flat triangles into a unique [3, T] tensor for vectorization
+        triplets = set()
+        for i, j, k in flat_triangles:
+            triplets.add(tuple(sorted([i, j, k])))
+        
+        if triplets:
+            self.triangles_tensor = torch.tensor(list(triplets), dtype=torch.long).t()
         else:
-            data_dir = Path(data_dir)
-
-        # Load topologies
-        self.edge_index_1 = torch.load(data_dir / "edge_index_simple.pt")
-        self.edge_attr_1 = torch.load(data_dir / "edge_attr_simple.pt")
-        self.edge_index_2 = torch.load(data_dir / "edge_index_hyper.pt")
-        self.edge_attr_2 = torch.load(data_dir / "edge_attr_hyper.pt")
-
-        self.N = max(self.edge_index_1.max().item(), self.edge_index_2.max().item()) + 1
+            self.triangles_tensor = torch.empty((3, 0), dtype=torch.long)
 
         self._precompute_simplicial_degree()
         self._precompute_co_seeding_edges()
 
-        self._build_adjacency_lists()
+        # Pass the reconstructed nested list to CELF
         self.celf_optimizer = OptimizedSimplicialSeeding(self.N, 0.0, self.links, self.triangles)
 
     def __call__(self, current_seeds: List[int], beta: float = 0.1, beta_delta: float = 0.2) -> List[Tuple[int, float]]:
@@ -61,15 +66,23 @@ class SimplicialSeeder:
         return candidates
 
     def _precompute_simplicial_degree(self):
-        """$O(N)$ vectorization for 2-simplex participation counts."""
-        self.node_tri_counts = torch.bincount(self.edge_index_2.flatten(), minlength=self.N)
+        """O(N) vectorization for 2-simplex participation counts."""
+        if self.triangles_tensor.numel() == 0:
+            self.simplicial_ranking = []
+            return
+            
+        self.node_tri_counts = torch.bincount(self.triangles_tensor.flatten(), minlength=self.N)
         self.simplicial_ranking = torch.argsort(self.node_tri_counts, descending=True).tolist()
 
     def _precompute_co_seeding_edges(self):
-        """$O(T \log T)$ vectorized edge overlap precomputation."""
-        e1 = self.edge_index_2[[0, 1], :]
-        e2 = self.edge_index_2[[1, 2], :]
-        e3 = self.edge_index_2[[0, 2], :]
+        """O(T \log T) vectorized edge overlap precomputation."""
+        if self.triangles_tensor.numel() == 0:
+            self.sorted_edges = []
+            return
+            
+        e1 = self.triangles_tensor[[0, 1], :]
+        e2 = self.triangles_tensor[[1, 2], :]
+        e3 = self.triangles_tensor[[0, 2], :]
         
         all_edges = torch.cat([e1, e2, e3], dim=1)
         all_edges, _ = torch.sort(all_edges, dim=0) # Order invariant
@@ -211,23 +224,30 @@ class OptimizedSimplicialSeeding:
             
         return spread
 
-    def seed_celf_proxy(self, beta, beta_delta):
+    def seed_celf_proxy(self, beta, beta_delta, initial_seeds=None):
         """
-        Greedy CELF using the deterministic 1-hop proxy.
-        Generates consistent, repeatable seed sets based on structural potential.
+        Modified to calculate marginal gains on top of an existing seed state
+        to support incremental rollout tracking.
         """
-        if self.target_count == 0:
-            return []
-
-        seed_set = set()
-        Q = [] 
+        seed_set = set(initial_seeds) if initial_seeds else set()
         
-        # 1. Initial pass
-        for node in range(self.N):
-            spread = self._proxy_spread({node}, beta, beta_delta)
-            heapq.heappush(Q, (-spread, node, 0))
+        if self.target_count <= len(seed_set):
+            return list(seed_set)
 
-        current_spread = 0.0
+        Q = [] 
+        current_spread = self._proxy_spread(seed_set, beta, beta_delta) if seed_set else 0.0
+        
+        # 1. Initial pass - evaluate marginal gain relative to initial_seeds
+        for node in range(self.N):
+            if node in seed_set:
+                continue
+                
+            seed_set.add(node)
+            spread = self._proxy_spread(seed_set, beta, beta_delta)
+            seed_set.remove(node)
+            
+            marginal_gain = spread - current_spread
+            heapq.heappush(Q, (-marginal_gain, node, len(seed_set)))
 
         # 2. Lazy evaluation loop
         while len(seed_set) < self.target_count:

@@ -160,8 +160,8 @@ class ImitationDataGenerator:
                 if not candidate_metrics:
                     continue
                     
-                scaled_targets = {
-                    cand: max(0.0, 1.0 - (steps / self.max_sim_steps))
+                raw_targets = {
+                    cand: steps
                     for cand, steps in candidate_metrics
                 }
                 
@@ -169,7 +169,7 @@ class ImitationDataGenerator:
                 dataset.append({
                     'event_id': event_id, 
                     'current_seeds': list(current_seeds), 
-                    'candidate_targets': scaled_targets
+                    'candidate_targets': raw_targets
                 })
                 
                 candidate_metrics.sort(key=lambda x: x[1])
@@ -199,10 +199,13 @@ import torch
 from torch.utils.data import Dataset
 
 class StaticGraphSeedingDataset(Dataset):
-    def __init__(self, imitation_dataset, num_nodes, event_features_tensor):
+    def __init__(self, imitation_dataset, num_nodes, event_features_tensor, max_sim_steps=50, scaling_mode='inverse', decay_rate=0.1):
         self.data_list = imitation_dataset
         self.num_nodes = num_nodes
         self.event_features_tensor = event_features_tensor
+        self.max_sim_steps = max_sim_steps
+        self.scaling_mode = scaling_mode
+        self.decay_rate = decay_rate
 
     def __len__(self):
         return len(self.data_list)
@@ -217,8 +220,27 @@ class StaticGraphSeedingDataset(Dataset):
         y = torch.zeros(self.num_nodes, dtype=torch.float)
         candidate_mask = torch.zeros(self.num_nodes, dtype=torch.bool)
         
-        for cand_node, score in item['candidate_targets'].items():
-            y[cand_node] = score
+        for cand_node, raw_steps in item['candidate_targets'].items():
+            # If the simulation hit max_steps, it failed to reach the target. 
+            # Force the score to 0 to heavily penalize dead-end seeds.
+            if raw_steps >= self.max_sim_steps:
+                scaled_score = 0.0
+            else:
+                if self.scaling_mode == 'inverse':
+                    # Max score 1.0 at t=1, asymptotically approaches 0
+                    scaled_score = 1.0 / max(1.0, float(raw_steps))
+                
+                elif self.scaling_mode == 'exponential':
+                    # Max score 1.0 at t=1, decays based on decay_rate
+                    scaled_score = np.exp(-self.decay_rate * (max(1.0, float(raw_steps)) - 1.0))
+                
+                elif self.scaling_mode == 'linear':
+                    scaled_score = max(0.0, 1.0 - (raw_steps / self.max_sim_steps))
+                    
+                else:
+                    raise ValueError(f"Unknown scaling mode: {self.scaling_mode}")
+
+            y[cand_node] = scaled_score
             candidate_mask[cand_node] = True
             
         # Fetch dense event features using the integer ID
@@ -243,7 +265,7 @@ import torch
 import os
 from torch.utils.data import DataLoader
 
-def build_production_dataloader(imitation_dataset, user_idx, event_idx, data_dir="data", batch_size=32, shuffle=True):
+def build_production_dataloader(imitation_dataset, user_idx, event_idx, data_dir="data", batch_size=32, shuffle=True, max_sim_steps=50):
     num_nodes = len(user_idx)
     
     print("Loading static graph topology...")
@@ -273,7 +295,7 @@ def build_production_dataloader(imitation_dataset, user_idx, event_idx, data_dir
     # FIX: Explicitly cast the underlying numpy array to a homogenous float32 block
     event_features_tensor = torch.tensor(aligned_event_features.values.astype(np.float32), dtype=torch.float)
     
-    dataset = StaticGraphSeedingDataset(imitation_dataset, num_nodes, event_features_tensor)
+    dataset = StaticGraphSeedingDataset(imitation_dataset, num_nodes, event_features_tensor, max_sim_steps=max_sim_steps)
     
     dataloader = DataLoader(
         dataset,
