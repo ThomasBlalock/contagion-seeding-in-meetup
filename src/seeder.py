@@ -8,10 +8,11 @@ class SimplicialSeeder:
     Seeding strategies for Simplicial Contagion Models.
     Designed to be stateless with respect to tree expansion to support BFS/MCMC rollouts safely.
     """
-    def __init__(self, num_nodes: int, links: List[List[int]], flat_triangles: List[Tuple[int, int, int]]):
+    def __init__(self, num_nodes: int, links: List[List[int]], flat_triangles: List[Tuple[int, int, int]], top_n=20):
         self.N = num_nodes
         self.links = links
-        
+        self.top_n = top_n
+
         # 1. Reconstruct the nested adjacency list expected by the CELF proxy
         self.triangles = [[] for _ in range(self.N)]
         for i, j, k in flat_triangles:
@@ -43,10 +44,11 @@ class SimplicialSeeder:
         
         # Interleave candidates from different strategies to ensure structural diversity.
         # Assigned decreasing mock scores to maintain the generated rank order.
-        sd_nodes = self.simplicial_degree_centrality(current_seeds, top_k=5)
-        tc_nodes = self.triangle_co_seeding(current_seeds, top_k=5)
-        celf_nodes = self.celf_proxy_seeding(current_seeds, top_k=5, beta=beta, beta_delta=beta_delta)
-        rs_nodes = self.random_sampling(current_seeds, top_k=5)
+        top_each = self.top_n // 4 + 1 # Ensure we get at least some candidates from each strategy
+        sd_nodes = self.simplicial_degree_centrality(current_seeds, top_k=top_each)
+        tc_nodes = self.triangle_co_seeding(current_seeds, top_k=top_each)
+        celf_nodes = self.celf_proxy_seeding(current_seeds, top_k=top_each, beta=beta, beta_delta=beta_delta)
+        rs_nodes = self.random_sampling(current_seeds, top_k=top_each)
 
         max_len = max(len(sd_nodes), len(tc_nodes), len(celf_nodes), len(rs_nodes))
         current_score = 1.0
