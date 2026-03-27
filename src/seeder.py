@@ -45,6 +45,7 @@ class SimplicialSeeder:
         # Interleave candidates from different strategies to ensure structural diversity.
         # Assigned decreasing mock scores to maintain the generated rank order.
         top_each = self.top_n // 4 + 1 # Ensure we get at least some candidates from each strategy
+        top_each = int(top_each*1.5) # Slightly increase to account for potential duplicates across strategies
         sd_nodes = self.simplicial_degree_centrality(current_seeds, top_k=top_each)
         tc_nodes = self.triangle_co_seeding(current_seeds, top_k=top_each)
         celf_nodes = self.celf_proxy_seeding(current_seeds, top_k=top_each, beta=beta, beta_delta=beta_delta)
