@@ -49,7 +49,7 @@ class SimplicialSeeder:
         sd_nodes = self.simplicial_degree_centrality(current_seeds, top_k=top_each)
         tc_nodes = self.triangle_co_seeding(current_seeds, top_k=top_each)
         celf_nodes = self.celf_proxy_seeding(current_seeds, top_k=top_each, beta=beta, beta_delta=beta_delta)
-        rs_nodes = self.random_sampling(current_seeds, top_k=top_each)
+        rs_nodes = self.random_sampling(current_seeds, top_k=top_each*2) # More random candidates to ensure we fill the quota after deduplication
 
         max_len = max(len(sd_nodes), len(tc_nodes), len(celf_nodes), len(rs_nodes))
         current_score = 1.0

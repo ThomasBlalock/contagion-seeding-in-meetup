@@ -142,8 +142,10 @@ class ImitationDataGenerator:
                     continue
                     
                 candidates_with_scores = self.seeding_func(current_seeds)
-                top_candidates = [c[0] for c in candidates_with_scores[:self.top_n]]
-                
+                top_candidates = [c[0] for c in candidates_with_scores[:int(self.top_n * 0.5)]]
+                top_candidates += random.sample([c[0] for c in candidates_with_scores[int(self.top_n * 0.5):]],
+                                               k=int(self.top_n * 0.5))
+
                 candidate_metrics = []
                 for candidate in top_candidates:
                     if candidate in current_seeds:
