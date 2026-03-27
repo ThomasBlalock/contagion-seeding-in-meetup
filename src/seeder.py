@@ -25,7 +25,10 @@ class SimplicialSeeder:
         self._precompute_simplicial_degree()
         self._precompute_co_seeding_edges()
 
-    def __call__(self, current_seeds: List[int]) -> List[Tuple[int, float]]:
+        self._build_adjacency_lists()
+        self.celf_optimizer = OptimizedSimplicialSeeding(self.N, 0.0, self.links, self.triangles)
+
+    def __call__(self, current_seeds: List[int], beta: float = 0.1, beta_delta: float = 0.2) -> List[Tuple[int, float]]:
         """
         Executes all methods and unifies outputs into the `[(node, score), ...]` 
         format expected by ImitationDataGenerator.
@@ -37,18 +40,21 @@ class SimplicialSeeder:
         # Assigned decreasing mock scores to maintain the generated rank order.
         sd_nodes = self.simplicial_degree_centrality(current_seeds, top_k=5)
         tc_nodes = self.triangle_co_seeding(current_seeds, top_k=5)
+        celf_nodes = self.celf_proxy_seeding(current_seeds, top_k=5, beta=beta, beta_delta=beta_delta)
         rs_nodes = self.random_sampling(current_seeds, top_k=5)
 
-        max_len = max(len(sd_nodes), len(tc_nodes), len(rs_nodes))
+        max_len = max(len(sd_nodes), len(tc_nodes), len(celf_nodes), len(rs_nodes))
         current_score = 1.0
         score_decrement = 0.05
 
         for i in range(max_len):
-            for strat_list in (tc_nodes, sd_nodes, rs_nodes): # Prioritize co-seeding pairs
+            # Prioritize CELF and co-seeding
+            for strat_list in (celf_nodes, tc_nodes, sd_nodes, rs_nodes): 
                 if i < len(strat_list):
                     node = strat_list[i]
                     if node not in seen:
-                        candidates.append((node, current_score))
+                        random_score = np.random.uniform(0.001, 0.999)
+                        candidates.append((node, random_score))
                         seen.add(node)
                         current_score -= score_decrement
                         
@@ -132,3 +138,110 @@ class SimplicialSeeder:
         
         sample_size = min(top_k, len(valid_nodes))
         return np.random.choice(valid_nodes, size=sample_size, replace=False).tolist()
+    
+    def _build_adjacency_lists(self):
+        """Converts PyTorch edge indices to Python lists for the CELF proxy."""
+        self.links = [[] for _ in range(self.N)]
+        for u, v in self.edge_index_1.t().tolist():
+            self.links[u].append(v)
+            
+        self.triangles = [[] for _ in range(self.N)]
+        for i, j, k in self.edge_index_2.t().tolist():
+            self.triangles[i].append((j, k))
+            self.triangles[j].append((i, k))
+            self.triangles[k].append((i, j))
+
+    def celf_proxy_seeding(self, current_seeds: List[int], top_k: int = 5, beta: float = 0.1, beta_delta: float = 0.2) -> List[int]:
+        """Executes CELF proxy incrementally from the current MCMC/BFS state."""
+        self.celf_optimizer.target_count = len(current_seeds) + top_k
+        full_seed_set = self.celf_optimizer.seed_celf_proxy(beta, beta_delta, initial_seeds=current_seeds)
+        
+        # Isolate and return only the newly added nodes to maintain top_k structure
+        return [node for node in full_seed_set if node not in current_seeds]
+    
+
+import numpy as np
+import heapq
+
+class OptimizedSimplicialSeeding:
+    def __init__(self, N, rho_0, links, triangles):
+        self.N = N
+        self.rho_0 = rho_0
+        self.links = links
+        self.triangles = triangles
+        self.target_count = int(self.N * self.rho_0)
+
+    def _proxy_spread(self, seed_set, beta, beta_delta):
+        """
+        Deterministic 1-hop expected activation proxy.
+        Calculates expected spread without executing multi-step Monte Carlo simulations.
+        """
+        if not seed_set:
+            return 0.0
+
+        spread = len(seed_set)
+        
+        m_counts = np.zeros(self.N, dtype=int)
+        n_counts = np.zeros(self.N, dtype=int)
+        
+        for s in seed_set:
+            # Count 1-simplex exposures
+            for neighbor in self.links[s]:
+                if neighbor not in seed_set:
+                    m_counts[neighbor] += 1
+                    
+            # Count 2-simplex exposures
+            for j, k in self.triangles[s]:
+                if j in seed_set and k not in seed_set:
+                    n_counts[k] += 1
+                elif k in seed_set and j not in seed_set:
+                    n_counts[j] += 1
+                    
+        # A triangle shared by two seeded nodes will be counted twice (once from each seeded node).
+        n_counts = n_counts // 2 
+        
+        unseeded_mask = np.ones(self.N, dtype=bool)
+        unseeded_mask[list(seed_set)] = False
+        
+        active_mask = unseeded_mask & ((m_counts > 0) | (n_counts > 0))
+        
+        if np.any(active_mask):
+            p_activation = 1.0 - ((1.0 - beta)**m_counts[active_mask]) * ((1.0 - beta_delta)**n_counts[active_mask])
+            spread += np.sum(p_activation)
+            
+        return spread
+
+    def seed_celf_proxy(self, beta, beta_delta):
+        """
+        Greedy CELF using the deterministic 1-hop proxy.
+        Generates consistent, repeatable seed sets based on structural potential.
+        """
+        if self.target_count == 0:
+            return []
+
+        seed_set = set()
+        Q = [] 
+        
+        # 1. Initial pass
+        for node in range(self.N):
+            spread = self._proxy_spread({node}, beta, beta_delta)
+            heapq.heappush(Q, (-spread, node, 0))
+
+        current_spread = 0.0
+
+        # 2. Lazy evaluation loop
+        while len(seed_set) < self.target_count:
+            neg_mg, node, last_update = heapq.heappop(Q)
+            
+            if last_update == len(seed_set):
+                seed_set.add(node)
+                current_spread += -neg_mg
+            else:
+                seed_set.add(node)
+                new_spread = self._proxy_spread(seed_set, beta, beta_delta)
+                seed_set.remove(node)
+                
+                marginal_gain = new_spread - current_spread
+                heapq.heappush(Q, (-marginal_gain, node, len(seed_set)))
+
+        return list(seed_set)
