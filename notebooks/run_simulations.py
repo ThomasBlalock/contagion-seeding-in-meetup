@@ -40,30 +40,6 @@ with open("data/user_idx.pkl", "rb") as f:
     user_idx = pickle.load(f)
 with open("data/event_idx.pkl", "rb") as f:
     idx_to_event = pickle.load(f)
-
-class ContagionProbabilityLookup:
-    """
-    O(1) memory-backed lookup table for user-event contagion probabilities.
-    """
-    def __init__(self, probability_matrix, user_mapping, event_mapping):
-        self.prob_matrix = probability_matrix
-        self.user_to_idx = user_mapping
-        self.event_to_idx = event_mapping
-
-    def __call__(self, user_id, event_id) -> float:
-        """
-        Accepts the original user ID and event ID strings/ints and 
-        returns the calibrated transmission probability.
-        """
-        if user_id not in self.user_to_idx or event_id not in self.event_to_idx:
-            # Return baseline probability or 0.0 if the node isn't found
-            return 0.0 
-        
-        u_idx = self.user_to_idx[user_id]
-        e_idx = self.event_to_idx[event_id]
-        return self.prob_matrix[u_idx, e_idx].item()
-with open("data/probability_lookup.pkl", "rb") as f:
-    prob_lookup = pickle.load(f)
 def sus_func():
     return prob_lookup()
 
@@ -87,17 +63,18 @@ print(f"Node 0 links: {adpt.links[0]}")
 print(f"Node 0 triangles: {adpt.triangles[0]}")
 print("Total nodes:", adpt.N)
 event_ids = np.random.choice(
-    idx_to_event, 
+    range(len(idx_to_event)), 
     size=min(config["sample_num_events"], len(idx_to_event)), replace=False)
 combined_data = None
 for event_id in event_ids:
     lam = config["lam"]
     lam_d = config["lam_d"]
     def sus_func(node_id):
-        original_user_id = user_idx[node_id]
-        original_event_id = idx_to_event[event_id]
-        p = prob_lookup(user_id=original_user_id, event_id=original_event_id)
-        return lam*(p), lam_d*(p)
+        # original_user_id = user_idx[node_id]
+        # original_event_id = idx_to_event[event_id]
+        # p = prob_lookup(user_id=original_user_id, event_id=original_event_id)
+        # return lam*(p), lam_d*(p)
+        return lam, lam_d
     config["init_params"]["susceptibility_func"] = sus_func
 
     data_gen = ImitationDataGenerator(**config["init_params"])
