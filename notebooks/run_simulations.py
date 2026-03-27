@@ -12,8 +12,8 @@ from seeder import SimplicialSeeder
 
 # Configuration all in one place for easy adjustments
 config = {
-    "lam": 0.6, # base infection probability scaling factor for simple edges
-    "lam_d": 1, # base infection probability scaling factor for hyperedges (triangles)
+    "lam": 0.2, # base infection probability scaling factor for simple edges
+    "lam_d": 0.4, # base infection probability scaling factor for hyperedges (triangles)
     "sample_num_events": 1, # Number of distinct events to generate data for (randomly sampled from the dataset)
     "init_params": {
         "num_mc_trials": 20, # Number of simulations per candidate seed to calculate avg timesteps
