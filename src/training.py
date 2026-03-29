@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 # From https://medium.com/biased-algorithms/a-practical-guide-to-implementing-early-stopping-in-pytorch-for-model-training-99a7cbd46e9d
 class EarlyStopping:
-    def __init__(self, patience=5, delta=0, verbose=False):
+    def __init__(self, patience=5, delta=0.001, verbose=False):
         self.patience = patience
         self.delta = delta
         self.verbose = verbose
@@ -28,7 +28,7 @@ class EarlyStopping:
 early_stopping = EarlyStopping(patience=5, delta=0.001, verbose=True)
 
 class ImitationTrainer:
-    def __init__(self, model, train_dataloader, val_dataloader, static_graph, config, callbacks, use_wandb=False):
+    def __init__(self, model, train_dataloader, val_dataloader, static_graph, config, use_wandb=False):
         self.model = model
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
@@ -108,11 +108,11 @@ class ImitationTrainer:
             self.history['val_loss'].append(avg_val_loss)
 
             # Check early stopping condition
-            early_stopping.check_early_stop(avg_val_loss)
+            # early_stopping.check_early_stop(avg_val_loss)
 
-            if early_stopping.stop_training:
-                print(f"Early stopping at epoch {epoch}")
-                break
+            # if early_stopping.stop_training:
+            #     print(f"Early stopping at epoch {epoch}")
+            #     break
             
             print(f"Epoch {epoch+1}/{self.epochs} | Train BCE: {avg_train_loss:.4f} | Val BCE: {avg_val_loss:.4f}")
             if self.use_wandb:
