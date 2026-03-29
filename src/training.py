@@ -4,7 +4,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 
 class ImitationTrainer:
-    def __init__(self, model, train_dataloader, val_dataloader, static_graph, config, use_wandb=False):
+    def __init__(self, model, train_dataloader, val_dataloader, static_graph, config, callbacks, use_wandb=False):
         self.model = model
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
