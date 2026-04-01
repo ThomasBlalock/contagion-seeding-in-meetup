@@ -108,11 +108,11 @@ class ImitationTrainer:
             self.history['val_loss'].append(avg_val_loss)
 
             # Check early stopping condition
-            # early_stopping.check_early_stop(avg_val_loss)
+            early_stopping.check_early_stop(avg_val_loss)
 
-            # if early_stopping.stop_training:
-            #     print(f"Early stopping at epoch {epoch}")
-            #     break
+            if early_stopping.stop_training:
+                print(f"Early stopping at epoch {epoch}")
+                break
             
             print(f"Epoch {epoch+1}/{self.epochs} | Train BCE: {avg_train_loss:.4f} | Val BCE: {avg_val_loss:.4f}")
             if self.use_wandb:
