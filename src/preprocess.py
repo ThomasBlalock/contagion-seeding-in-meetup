@@ -89,8 +89,16 @@ class VectorizedSCMSimulator:
         return timesteps_to_target.mean().item()
 
 class ImitationDataGenerator:
-    def __init__(self, num_nodes, edge_index_1, triangles_list, susceptibility_func, seeding_func, 
+    def __init__(self, num_nodes=None, edge_index_1=None, triangles_list=None, susceptibility_func=None, seeding_func=None,
                  num_mc_trials=50, top_n=30, infected_target=10, max_sim_steps=50, device='cpu'):
+        
+        if num_nodes is None or edge_index_1 is None or triangles_list is None or susceptibility_func is None or seeding_func is None:
+            print("Num nodes:", num_nodes)
+            print("Edge index 1:", edge_index_1)
+            print("Triangles list:", triangles_list)
+            print("Susceptibility func:", susceptibility_func)
+            print("Seeding func:", seeding_func)
+            raise ValueError("All parameters must be provided to initialize ImitationDataGenerator.")
         
         self.num_nodes = num_nodes
         self.seeding_func = seeding_func
@@ -119,10 +127,13 @@ class ImitationDataGenerator:
             device=device
         )
 
-    def generate(self, event_id, num_iter=100, max_seeds_per_iter=5, expand_best_n=3, expand_random_n=3, sampling_randomness=0.5):
+    def generate(self, event_id=None, num_iter=100, max_seeds_per_iter=5, expand_best_n=3, expand_random_n=3, sampling_randomness=0.5):
         """
         Executes the main MCMC rollout loop with bounded tree expansion.
         """
+        if event_id is None:
+            raise ValueError("event_id must be provided to generate imitation data for a specific event.")
+
         dataset = []
         
         for iteration in tqdm(range(num_iter), desc="Generating Imitation Data", postfix={"MC Simulations": self.simulator.M}):
