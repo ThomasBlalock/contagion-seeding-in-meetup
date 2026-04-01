@@ -3,6 +3,30 @@ import torch.nn as nn
 #import wandb
 import matplotlib.pyplot as plt
 
+# From https://medium.com/biased-algorithms/a-practical-guide-to-implementing-early-stopping-in-pytorch-for-model-training-99a7cbd46e9d
+class EarlyStopping:
+    def __init__(self, patience=5, delta=0.001, verbose=False):
+        self.patience = patience
+        self.delta = delta
+        self.verbose = verbose
+        self.best_loss = None
+        self.no_improvement_count = 0
+        self.stop_training = False
+    
+    def check_early_stop(self, val_loss):
+        if self.best_loss is None or val_loss < self.best_loss - self.delta:
+            self.best_loss = val_loss
+            self.no_improvement_count = 0
+        else:
+            self.no_improvement_count += 1
+            if self.no_improvement_count >= self.patience:
+                self.stop_training = True
+                if self.verbose:
+                    print("Stopping early as no improvement has been observed.")
+
+# Initialize early stopping
+early_stopping = EarlyStopping(patience=5, delta=0.001, verbose=True)
+
 class ImitationTrainer:
     def __init__(self, model, train_dataloader, val_dataloader, static_graph, config, use_wandb=False):
         self.model = model
@@ -14,6 +38,7 @@ class ImitationTrainer:
         
         # Move static graph to device exactly once
         self.static_graph = {k: v.to(self.device) for k, v in static_graph.items()}
+        
         
         self.optimizer = torch.optim.Adam(model.parameters(), lr=config.get('lr', 1e-3))
         self.criterion = nn.BCEWithLogitsLoss(reduction='none')
@@ -81,6 +106,13 @@ class ImitationTrainer:
             
             avg_val_loss = val_loss_accum / len(self.val_dataloader)
             self.history['val_loss'].append(avg_val_loss)
+
+            # Check early stopping condition
+            # early_stopping.check_early_stop(avg_val_loss)
+
+            # if early_stopping.stop_training:
+            #     print(f"Early stopping at epoch {epoch}")
+            #     break
             
             print(f"Epoch {epoch+1}/{self.epochs} | Train BCE: {avg_train_loss:.4f} | Val BCE: {avg_val_loss:.4f}")
             if self.use_wandb:
