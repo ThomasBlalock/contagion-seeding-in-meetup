@@ -40,8 +40,68 @@ with open("data/user_idx.pkl", "rb") as f:
     user_idx = pickle.load(f)
 with open("data/event_idx.pkl", "rb") as f:
     idx_to_event = pickle.load(f)
-def sus_func():
-    return prob_lookup()
+
+# Get probability lookup ready
+class CalibratedAffinityLookup:
+    """
+    Loads embeddings, computes a full calibrated probability matrix, 
+    and provides O(1) lookups for specific user-event pairs.
+    """
+    def __init__(self, user_csv_path, event_csv_path, calibrated_model, device='cpu'):
+        print("Loading embeddings...")
+        users_df = pd.read_csv(user_csv_path)
+        events_df = pd.read_csv(event_csv_path)
+        
+        # The first column is the ID
+        self.user_ids = users_df.iloc[:, 0].astype(str).tolist()
+        self.event_ids = events_df.iloc[:, 0].astype(str).tolist()
+        
+        # Create O(1) mapping dictionaries for index lookups
+        self.user_to_idx = {uid: idx for idx, uid in enumerate(self.user_ids)}
+        self.event_to_idx = {eid: idx for idx, eid in enumerate(self.event_ids)}
+        
+        # Extract raw embeddings into PyTorch tensors
+        user_embs = torch.tensor(users_df.iloc[:, 1:].values, dtype=torch.float32).to(device)
+        event_embs = torch.tensor(events_df.iloc[:, 1:].values, dtype=torch.float32).to(device)
+        
+        # L2 Normalize to ensure the dot product equates to cosine similarity
+        user_embs = F.normalize(user_embs, p=2, dim=1)
+        event_embs = F.normalize(event_embs, p=2, dim=1)
+        
+        print("Computing similarity matrix...")
+        # Matrix multiplication computes all user-event dot products instantly.
+        # Resulting shape: [num_users, num_events]
+        similarities = torch.matmul(user_embs, event_embs.T)
+        
+        print("Applying Platt scaling calibration...")
+        # Extract coefficients from the provided calibrator
+        coef = calibrated_model.coef.to(device)
+        intercept = calibrated_model.intercept.to(device)
+        
+        # Vectorized application of the sigmoid calibration curve
+        logits = similarities * coef + intercept
+        probs = torch.sigmoid(logits)
+        
+        # Store as a numpy array for low-overhead CPU lookups in production
+        self.probability_table = probs.cpu().numpy()
+        print(f"Lookup table ready. Shape: {self.probability_table.shape}")
+
+    def __call__(self, user_id, event_id):
+        """
+        Maps ID strings to matrix indices and returns the precomputed calibrated probability.
+        """
+        u_idx = self.user_to_idx.get(user_id)
+        e_idx = self.event_to_idx.get(event_id)
+        
+        if u_idx is None:
+            raise KeyError(f"User ID '{user_id}' not found.")
+        if e_idx is None:
+            raise KeyError(f"Event ID '{event_id}' not found.")
+            
+        return self.probability_table[u_idx, e_idx]
+
+with open('data/probability_lookup.pkl', 'rb') as f:
+    prob_lookup = pickle.load(f)
 
 def combine_imitation_data(existing_data, new_data):
     """
@@ -66,15 +126,15 @@ event_ids = np.random.choice(
     range(len(idx_to_event)), 
     size=min(config["sample_num_events"], len(idx_to_event)), replace=False)
 combined_data = None
+
 for event_id in event_ids:
     lam = config["lam"]
     lam_d = config["lam_d"]
     def sus_func(node_id):
-        # original_user_id = user_idx[node_id]
-        # original_event_id = idx_to_event[event_id]
-        # p = prob_lookup(user_id=original_user_id, event_id=original_event_id)
-        # return lam*(p), lam_d*(p)
-        return lam, lam_d
+        original_user_id = user_idx[node_id]
+        original_event_id = idx_to_event[event_id]
+        p = prob_lookup(user_id=original_user_id, event_id=original_event_id)
+        return lam*(p), lam_d*(p)
     config["init_params"]["susceptibility_func"] = sus_func
 
     data_gen = ImitationDataGenerator(**config["init_params"])
