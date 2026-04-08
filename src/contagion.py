@@ -3,33 +3,6 @@ import numpy as np
 import random
 import math
 
-
-class NodeSusceptibilityModel:
-    def __init__(self, node_features, base_beta=0.03, base_beta_delta=0.1):
-        """
-        Stores the feature matrix and parameters needed to calculate probabilities.
-        """
-        self.node_features = node_features
-        self.base_beta = base_beta
-        self.base_beta_delta = base_beta_delta
-
-    def __call__(self, node_id):
-        """
-        Calculates beta and beta_delta for a specific node_id.
-        """
-        # Example logic: scale baseline probabilities by a specific node feature.
-        # Replace this with your actual Phase 2.a Network-Unaware model forward pass.
-        feature_multiplier = self.node_features[node_id][0].item() 
-        
-        beta = self.base_beta * feature_multiplier
-        beta_delta = self.base_beta_delta * feature_multiplier
-        
-        # Clamp to valid probability bounds
-        beta = max(0.0, min(1.0, beta))
-        beta_delta = max(0.0, min(1.0, beta_delta))
-        
-        return beta, beta_delta
-
 class RandomSeeding:
     def __init__(self, N, rho_0):
         self.N = N

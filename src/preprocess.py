@@ -107,16 +107,17 @@ class ImitationDataGenerator:
         self.max_sim_steps = max_sim_steps
         
         # Precompute susceptibilities for the vectorized simulator
-        print("Precomputing node susceptibilities...")
+        print("Precomputing node susceptibilities...", flush=True)
         beta_list, beta_delta_list = [], []
         for i in range(num_nodes):
             b, bd = susceptibility_func(i)
             beta_list.append(b)
             beta_delta_list.append(bd)
-            
+
         self.beta_tensor = torch.tensor(beta_list, dtype=torch.float)
         self.beta_delta_tensor = torch.tensor(beta_delta_list, dtype=torch.float)
-        
+        print(f"Susceptibilities ready (N={num_nodes}). Building simulator...", flush=True)
+
         self.simulator = VectorizedSCMSimulator(
             num_nodes=num_nodes,
             edge_index_1=edge_index_1,
@@ -153,9 +154,14 @@ class ImitationDataGenerator:
                     continue
                     
                 candidates_with_scores = self.seeding_func(current_seeds)
-                top_candidates = [c[0] for c in candidates_with_scores[:int(self.top_n * sampling_randomness)]]
-                top_candidates += random.sample([c[0] for c in candidates_with_scores[int(self.top_n * sampling_randomness):]],
-                                               k=int(self.top_n * (1-sampling_randomness)))
+                deterministic_cut = int(self.top_n * sampling_randomness)
+                top_candidates = [c[0] for c in candidates_with_scores[:deterministic_cut]]
+                # Seeder may return fewer than top_n candidates after dedup, so
+                # clamp the random-sample count to the available remainder.
+                remainder = [c[0] for c in candidates_with_scores[deterministic_cut:]]
+                random_k = min(int(self.top_n * (1 - sampling_randomness)), len(remainder))
+                if random_k > 0:
+                    top_candidates += random.sample(remainder, k=random_k)
 
                 candidate_metrics = []
                 for candidate in top_candidates:

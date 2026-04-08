@@ -12,27 +12,27 @@ from seeder import SimplicialSeeder
 
 # Configuration all in one place for easy adjustments
 config = {
-    "lam": 0.2, # base infection probability scaling factor for simple edges
-    "lam_d": 0.4, # base infection probability scaling factor for hyperedges (triangles)
-    "sample_num_events": 1, # Number of distinct events to generate data for (randomly sampled from the dataset)
+    "lam": 0.1, # base infection probability scaling factor for simple edges
+    "lam_d": 0.2, # base infection probability scaling factor for hyperedges (triangles)
+    "sample_num_events": 100, # Number of distinct events to generate data for (randomly sampled from the dataset)
     "init_params": {
-        "num_mc_trials": 20, # Number of simulations per candidate seed to calculate avg timesteps
+        "num_mc_trials": 80, # Number of simulations per candidate seed to calculate avg timesteps
         "top_n": 30, # Number of seed nodes to consider at each iteration (from seeding function)
         "infected_target": 10, # Target number of infected nodes to reach in the simulation
         "max_sim_steps": 50, # Maximum steps to run the contagion simulation before considering it a failure (timeout)
         "device": 'cuda' if torch.cuda.is_available() else 'cpu'
     },
     "generate_params": {
-        "num_iter": 3, # Number of simulation iterations to perform for each event
+        "num_iter": 100, # Number of simulation iterations to perform for each event
         "max_seeds_per_iter": 2, # EXPONENTIAL FACTOR: KEEP LOW
-        "expand_best_n": 3, # Number of best performing seed nodes to expand in the next iteration
-        "expand_random_n": 3, # Number of randomly selected seed nodes to expand in the next iteration (for exploration)
+        "expand_best_n": 5, # Number of best performing seed nodes to expand in the next iteration
+        "expand_random_n": 5, # Number of randomly selected seed nodes to expand in the next iteration (for exploration)
         "sampling_randomness": 0.5 # Balance between testing promising candidates and exploring diverse (random) options
     }
 }
 
-edge_simple = torch.load("data/edge_index_simple.pt")
-edge_hyper = torch.load("data/edge_index_hyper.pt")
+edge_simple = torch.load("data/edge_index_simple.pt", weights_only=False)
+edge_hyper = torch.load("data/edge_index_hyper.pt", weights_only=False)
 
 config["init_params"]["edge_index_1"] = edge_simple
 
@@ -122,32 +122,137 @@ print("Links and triangles parsed:")
 print(f"Node 0 links: {adpt.links[0]}")
 print(f"Node 0 triangles: {adpt.triangles[0]}")
 print("Total nodes:", adpt.N)
-event_ids = np.random.choice(
-    range(len(idx_to_event)), 
-    size=min(config["sample_num_events"], len(idx_to_event)), replace=False)
-combined_data = None
+import json as _json
+import pickle
+import gc
+EVENT_IDS_PATH = "data/imitation_event_ids.json"
+CHECKPOINT_PATH = "data/imitation_data.pkl"
+CHECKPOINT_TMP = CHECKPOINT_PATH + ".tmp"
 
+def save_checkpoint(data, path=CHECKPOINT_PATH, tmp=CHECKPOINT_TMP):
+    """Atomic checkpoint write: pickle to .tmp then rename, so a crash mid-write
+    can never corrupt the previous good checkpoint."""
+    with open(tmp, "wb") as f:
+        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, path)
+
+def sample_new_event_ids(exclude=None):
+    """Draw a fresh batch of event ids, preferring events not yet seen.
+    Falls back to allowing repeats only when the unseen pool is exhausted."""
+    exclude = exclude or set()
+    target = min(config["sample_num_events"], len(idx_to_event))
+    pool = [i for i in range(len(idx_to_event)) if i not in exclude]
+    if len(pool) >= target:
+        new_ids = np.random.choice(pool, size=target, replace=False)
+    else:
+        # Pool exhausted; take everything left and top up from the full set.
+        new_ids = np.array(pool, dtype=np.int64)
+        if len(new_ids) < target:
+            top_up = np.random.choice(
+                range(len(idx_to_event)), size=target - len(new_ids), replace=False)
+            new_ids = np.concatenate([new_ids, top_up])
+        print(f"  (event pool exhausted; re-using {target - len(pool)} previously-seen event(s))",
+              flush=True)
+    with open(EVENT_IDS_PATH, "w") as f:
+        _json.dump([int(x) for x in new_ids], f)
+    return new_ids
+
+# 1. Load any existing checkpoint so we know which events are already done.
+combined_data = None
+all_done_event_ids = set()
+if os.path.exists(CHECKPOINT_PATH):
+    try:
+        with open(CHECKPOINT_PATH, "rb") as f:
+            combined_data = pickle.load(f)
+        all_done_event_ids = {int(entry["event_id"]) for entry in combined_data}
+        print(f"Loaded checkpoint: {len(combined_data)} entries spanning "
+              f"{len(all_done_event_ids)} unique event(s).", flush=True)
+    except Exception as e:
+        print(f"Could not load {CHECKPOINT_PATH} ({e}); starting fresh.", flush=True)
+        combined_data = None
+
+# 2. Decide which events this run will process.
+#    - If a sidecar exists AND its batch still has unfinished events, resume it.
+#    - Otherwise (no sidecar, or batch fully complete), sample a fresh batch
+#      and overwrite the sidecar. This is what makes "just keep running the
+#      script" accumulate more data each invocation.
+if os.path.exists(EVENT_IDS_PATH):
+    with open(EVENT_IDS_PATH, "r") as f:
+        event_ids = np.array(_json.load(f), dtype=np.int64)
+    pending = [int(e) for e in event_ids if int(e) not in all_done_event_ids]
+    if pending:
+        print(f"Resuming previous batch from {EVENT_IDS_PATH}: "
+              f"{len(pending)}/{len(event_ids)} event(s) still to do.", flush=True)
+    else:
+        print(f"Previous batch in {EVENT_IDS_PATH} is complete. "
+              f"Sampling a new batch...", flush=True)
+        event_ids = sample_new_event_ids(exclude=all_done_event_ids)
+        print(f"  -> sampled {len(event_ids)} fresh event ids.", flush=True)
+else:
+    event_ids = sample_new_event_ids(exclude=all_done_event_ids)
+    print(f"No sidecar found. Sampled {len(event_ids)} fresh event ids "
+          f"-> {EVENT_IDS_PATH}.", flush=True)
+
+# 3. Pre-slice the susceptibility column for each event in this batch, then
+#    drop the 1.9 GB probability table before any simulation starts. Each
+#    column is only ~num_nodes floats (~100 KB), so even hundreds of events
+#    fit in <100 MB.
+ordered_user_ids = [user_idx[i] for i in range(len(user_idx))]
+node_to_table_row = np.array(
+    [prob_lookup.user_to_idx[uid] for uid in ordered_user_ids], dtype=np.int64
+)
+
+event_prob_columns = {}
 for event_id in event_ids:
+    original_event_id = idx_to_event[event_id]
+    event_col_idx = prob_lookup.event_to_idx[original_event_id]
+    # Copy out a contiguous float32 vector so it doesn't keep a view alive on the table.
+    event_prob_columns[int(event_id)] = np.ascontiguousarray(
+        prob_lookup.probability_table[node_to_table_row, event_col_idx],
+        dtype=np.float32,
+    )
+print(f"Extracted susceptibility columns for {len(event_prob_columns)} event(s). "
+      f"Releasing probability lookup table...", flush=True)
+
+del prob_lookup
+gc.collect()
+
+# Use the all-time set so the per-event skip in the loop catches both
+# previously-finished events from this batch and any incidental overlap with
+# old batches if a sampled event happened to be picked before.
+completed_event_ids = all_done_event_ids
+
+for event_idx_pos, event_id in enumerate(event_ids, start=1):
+    if int(event_id) in completed_event_ids:
+        print(f"[{event_idx_pos}/{len(event_ids)}] Skipping event {event_id} "
+              f"(already in checkpoint).", flush=True)
+        continue
+
     lam = config["lam"]
     lam_d = config["lam_d"]
-    def sus_func(node_id):
-        original_user_id = user_idx[node_id]
-        original_event_id = idx_to_event[event_id]
-        p = prob_lookup(user_id=original_user_id, event_id=original_event_id)
-        return lam*(p), lam_d*(p)
+    node_probs = event_prob_columns[int(event_id)]
+
+    def sus_func(node_id, _p=node_probs, _lam=lam, _lam_d=lam_d):
+        p = float(_p[node_id])
+        return _lam * p, _lam_d * p
     config["init_params"]["susceptibility_func"] = sus_func
 
+    print(f"[{event_idx_pos}/{len(event_ids)}] Running event {event_id}...", flush=True)
     data_gen = ImitationDataGenerator(**config["init_params"])
     config["generate_params"]["event_id"] = event_id
     data = data_gen.generate(**config["generate_params"])
     combined_data = combine_imitation_data(combined_data, data)
 
-import pickle
+    # Drop the per-event simulator + its tensors before constructing the next one.
+    del data_gen
+    gc.collect()
 
-with open("data/imitation_data.pkl", "wb") as f:
-    pickle.dump(combined_data, f)
-        
-print("Complete. Plotting timestep distribution...")
+    # Checkpoint after every event so an overnight crash loses at most one event.
+    save_checkpoint(combined_data)
+    print(f"[{event_idx_pos}/{len(event_ids)}] Checkpoint saved "
+          f"({len(combined_data)} total entries).", flush=True)
+
+print("Complete. Plotting timestep distribution...", flush=True)
 
 import matplotlib.pyplot as plt
 import numpy as np
