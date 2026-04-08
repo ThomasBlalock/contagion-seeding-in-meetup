@@ -297,3 +297,7 @@ Run all models on the full test event set (last 10% chronological holdout). Beca
 - Veličković et al. (2018) — "Graph Attention Networks"
 - He et al. (2020) — "LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation"
 - Leskovec et al. (2007) — "Cost-effective Outbreak Detection in Networks" (CELF)
+
+## Documnetation:
+- Claude Code was used to debug a OOM error on the simulations
+- Gemini was used to brainstorm a work plan and create most of this README file

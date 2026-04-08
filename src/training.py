@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
-#import wandb
+import wandb
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+import os
+import time
 
 # From https://medium.com/biased-algorithms/a-practical-guide-to-implementing-early-stopping-in-pytorch-for-model-training-99a7cbd46e9d
 class EarlyStopping:
@@ -36,6 +39,10 @@ class ImitationTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
         self.use_wandb = use_wandb
+        config['weights_dir'] = config.get('weights_dir', 'weights')
+        unique_folder = f"imitation_model_{model.__class__.__name__}_{int(time.time())}"
+        self.out_dir = os.path.join(config['weights_dir'], unique_folder)
+        os.makedirs(self.out_dir, exist_ok=True)
         
         # Move static graph to device exactly once
         self.static_graph = {k: v.to(self.device) for k, v in static_graph.items()}
@@ -44,13 +51,16 @@ class ImitationTrainer:
         self.optimizer = torch.optim.Adam(model.parameters(), lr=config.get('lr', 1e-3))
         self.criterion = nn.BCEWithLogitsLoss(reduction='none')
         self.epochs = config.get('epochs', 10)
+        # Virtual-epoch knobs: if None, fall back to one full pass over the loader
+        self.steps_per_epoch = config.get('steps_per_epoch', None)
+        self.val_batches = config.get('val_batches', None)
         
         # Internal loss tracking
         self.history = {
             'train_loss': [],
             'val_loss': []
         }
-        self.reset=attach(engine, event=Events.COMPLETED, reset_engine=None, reset_event=Events.STARTED, *args, **kwargs)
+        
         if use_wandb:
             wandb.init(
                 project=config.get('project_name', "sidequest-imitation-learning"),
@@ -79,38 +89,68 @@ class ImitationTrainer:
         
         return masked_loss
 
+    @staticmethod
+    def _infinite_loader(dataloader):
+        """Yield batches forever, reshuffling each time the loader is exhausted.
+        Using a persistent iterator lets a 'virtual epoch' be any number of
+        batches without tearing down DataLoader workers every virtual epoch."""
+        while True:
+            for batch in dataloader:
+                yield batch
+
     def train(self):
         print(f"Starting training on {self.device}...")
-        
+
+        # Resolve virtual-epoch sizes (fall back to one full pass if unset)
+        train_steps = self.steps_per_epoch if self.steps_per_epoch is not None else len(self.train_dataloader)
+        val_steps = self.val_batches if self.val_batches is not None else len(self.val_dataloader)
+
+        # Persistent iterators so workers don't respawn every virtual epoch
+        train_iter = self._infinite_loader(self.train_dataloader)
+        val_iter = self._infinite_loader(self.val_dataloader)
+
         for epoch in range(self.epochs):
             # --- Training Phase ---
             self.model.train()
             train_loss_accum = 0.0
-            
-            for batch in self.train_dataloader:
+
+            train_pbar = tqdm(range(train_steps), desc=f"Epoch {epoch+1}/{self.epochs} [train]", leave=False)
+            for _ in train_pbar:
+                batch = next(train_iter)
                 self.optimizer.zero_grad()
                 loss = self._process_batch(batch)
                 loss.backward()
                 self.optimizer.step()
                 train_loss_accum += loss.item()
-                
-            avg_train_loss = train_loss_accum / len(self.train_dataloader)
+                train_pbar.set_postfix(loss=f"{loss.item():.4f}")
+
+            avg_train_loss = train_loss_accum / train_steps
             self.history['train_loss'].append(avg_train_loss)
-            
+
             # --- Validation Phase ---
             self.model.eval()
             val_loss_accum = 0.0
-            
+
             with torch.no_grad():
-                for batch in self.val_dataloader:
+                val_pbar = tqdm(range(val_steps), desc=f"Epoch {epoch+1}/{self.epochs} [val]  ", leave=False)
+                for _ in val_pbar:
+                    batch = next(val_iter)
                     loss = self._process_batch(batch)
                     val_loss_accum += loss.item()
-            
-            avg_val_loss = val_loss_accum / len(self.val_dataloader)
+                    val_pbar.set_postfix(loss=f"{loss.item():.4f}")
+
+            avg_val_loss = val_loss_accum / val_steps
             self.history['val_loss'].append(avg_val_loss)
 
             # Check early stopping condition
             early_stopping.check_early_stop(avg_val_loss)
+
+            # If no_improvement_count is 0, this epoch had the best validation loss so far
+            if early_stopping.no_improvement_count == 0:
+                out_path = f"best_imitation_model_epoch_{epoch+1}.pt"
+                out_path = os.path.join(self.out_dir, out_path)
+                torch.save(self.model.state_dict(), out_path)
+                print(f"New best model saved at epoch {epoch+1} (Val BCE: {avg_val_loss:.4f})")
 
             if early_stopping.stop_training:
                 print(f"Early stopping at epoch {epoch}")
