@@ -1,3 +1,4 @@
 data/ 
 notebooks/wandb/
 src/__pycache__/
+notebooks/weights/
