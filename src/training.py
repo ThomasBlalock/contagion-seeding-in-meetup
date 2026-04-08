@@ -50,6 +50,7 @@ class ImitationTrainer:
             'train_loss': [],
             'val_loss': []
         }
+        self.reset=attach(engine, event=Events.COMPLETED, reset_engine=None, reset_event=Events.STARTED, *args, **kwargs)
         if use_wandb:
             wandb.init(
                 project=config.get('project_name', "sidequest-imitation-learning"),
