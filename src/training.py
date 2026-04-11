@@ -8,7 +8,7 @@ import time
 
 # From https://medium.com/biased-algorithms/a-practical-guide-to-implementing-early-stopping-in-pytorch-for-model-training-99a7cbd46e9d
 class EarlyStopping:
-    def __init__(self, patience=5, delta=0.001, verbose=False):
+    def __init__(self, patience=50, delta=0.001, verbose=False):
         self.patience = patience
         self.delta = delta
         self.verbose = verbose
@@ -175,8 +175,10 @@ class ImitationTrainer:
             'val_loss': []
         }
 
-    def plot_losses(self, save_path="loss_curve.png"):
+    def plot_losses(self, save_path=None):
         """Plots and saves the training and validation loss curves."""
+        if save_path is None:
+            save_path = os.path.join(self.out_dir, "loss_curve.png")
         plt.figure(figsize=(10, 6))
         plt.plot(self.history['train_loss'], label='Train Loss', marker='o')
         plt.plot(self.history['val_loss'], label='Validation Loss', marker='o')
