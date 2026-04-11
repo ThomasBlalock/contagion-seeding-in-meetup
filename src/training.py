@@ -8,7 +8,7 @@ import time
 
 # From https://medium.com/biased-algorithms/a-practical-guide-to-implementing-early-stopping-in-pytorch-for-model-training-99a7cbd46e9d
 class EarlyStopping:
-    def __init__(self, patience=50, delta=0.001, verbose=False):
+    def __init__(self, patience=5, delta=0.005, verbose=False): # Changed from 0.001, which we believe was too stringent
         self.patience = patience
         self.delta = delta
         self.verbose = verbose
@@ -48,7 +48,7 @@ class ImitationTrainer:
         self.static_graph = {k: v.to(self.device) for k, v in static_graph.items()}
         
         
-        self.optimizer = torch.optim.Adam(model.parameters(), lr=config.get('lr', 1e-3))
+        self.optimizer = torch.optim.Adam(model.parameters(), lr=config.get('lr'), weight_decay=config.get('weight_decay')) # Implement weight decay to limit overfitting
         self.criterion = nn.BCEWithLogitsLoss(reduction='none')
         self.epochs = config.get('epochs', 10)
         # Virtual-epoch knobs: if None, fall back to one full pass over the loader
