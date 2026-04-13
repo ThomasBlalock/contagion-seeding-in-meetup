@@ -29,12 +29,11 @@ class EarlyStopping:
                     print("Stopping early as no improvement has been observed.")
 
 class ImitationTrainer:
-    def __init__(self, model, train_dataloader, val_dataloader, static_graph, config, use_wandb=False):
-        self.model = model
+    def __init__(self, device, model, train_dataloader, val_dataloader, static_graph, config, use_wandb=False):
+        self.device = device
+        self.model = model.to(self.device)
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)
         self.use_wandb = use_wandb
         config['weights_dir'] = config.get('weights_dir', 'weights')
         unique_folder = f"imitation_model_{model.__class__.__name__}_{int(time.time())}"
