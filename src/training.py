@@ -28,9 +28,6 @@ class EarlyStopping:
                 if self.verbose:
                     print("Stopping early as no improvement has been observed.")
 
-# Initialize early stopping
-early_stopping = EarlyStopping(patience=5, delta=0.001, verbose=True)
-
 class ImitationTrainer:
     def __init__(self, model, train_dataloader, val_dataloader, static_graph, config, use_wandb=False):
         self.model = model
@@ -60,6 +57,10 @@ class ImitationTrainer:
             'train_loss': [],
             'val_loss': []
         }
+
+        patience = config.get('early_stopping_patience', 5)
+        delta = config.get('early_stopping_delta', 0.001)
+        self.early_stopping = EarlyStopping(patience=patience, delta=delta, verbose=True)
         
         if use_wandb:
             wandb.init(
@@ -143,16 +144,16 @@ class ImitationTrainer:
             self.history['val_loss'].append(avg_val_loss)
 
             # Check early stopping condition
-            early_stopping.check_early_stop(avg_val_loss)
+            self.early_stopping.check_early_stop(avg_val_loss)
 
             # If no_improvement_count is 0, this epoch had the best validation loss so far
-            if early_stopping.no_improvement_count == 0:
+            if self.early_stopping.no_improvement_count == 0:
                 out_path = f"best_imitation_model_epoch_{epoch+1}.pt"
                 out_path = os.path.join(self.out_dir, out_path)
                 torch.save(self.model.state_dict(), out_path)
                 print(f"New best model saved at epoch {epoch+1} (Val BCE: {avg_val_loss:.4f})")
 
-            if early_stopping.stop_training:
+            if self.early_stopping.stop_training:
                 print(f"Early stopping at epoch {epoch}")
                 break
             
@@ -169,14 +170,10 @@ class ImitationTrainer:
         print("Training complete.")
         self.plot_losses()
 
-        # Reset values
-        self.history = {
-            'train_loss': [],
-            'val_loss': []
-        }
-
-    def plot_losses(self, save_path="loss_curve.png"):
+    def plot_losses(self, save_path=None):
         """Plots and saves the training and validation loss curves."""
+        if save_path is None:
+            save_path = os.path.join(self.out_dir, "loss_curve.png")
         plt.figure(figsize=(10, 6))
         plt.plot(self.history['train_loss'], label='Train Loss', marker='o')
         plt.plot(self.history['val_loss'], label='Validation Loss', marker='o')
